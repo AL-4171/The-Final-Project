@@ -1,138 +1,179 @@
-// ================= THEME.JS - COMPLETE FIX =================
+// ================= THEME.JS - COMPLETE FIX v3 =================
 // Works on ALL browsers with guaranteed sound
+// FIXED: Each Bob plays its own sound when appearing
+// FIXED: Sound stops when Bob is closed or expires
+// FIXED: NO duplicate Bobs (prevention system enhanced)
+// FIXED: 5-minute critical alert plays sound AND shows Bob
+// FIXED: Reload sound works consistently
+// NEW: Water level overflow alert (tank > 90%)
+// NEW: Water level critical high alert (tank = 100%)
+// FIXED: NO sound for pump on/off or zones on/off actions
 
 // ===================== ALERT & BOB LOGIC =====================
 let bobQueue = [];
 let isBobShowing = false;
+let currentBobSoundPlaying = false;
+let currentBobSoundTimeout = null;
 let activeAlertConditions = {
     soil_critical: false, soil_warning: false,
     temp_critical: false, temp_warning: false,
     water_critical: false, water_warning: false,
-    hum_critical: false, hum_warning: false
+    water_overflow_warning: false, water_overflow_critical: false,
+    hum_critical: false, hum_warning: false,
+    rain_warning: false
 };
+
+// Track which Bobs have been shown recently to prevent duplicates
+const recentBobsShown = new Map(); // messageKey -> timestamp
+const BOB_DEDUPE_DELAY = 20000; // 20 seconds minimum between same Bob type (increased)
+
+// Track active Bob ID to prevent any duplicates
+let currentActiveBobId = null;
+let lastBobEndTime = 0;
+const BOB_COOLDOWN = 3000; // 3 seconds cooldown between Bobs
+
+// Flag to prevent duplicate critical alerts on page load
+let reloadBobShown = false;
 
 // ===================== FORCE SOUND ON ANY BROWSER =====================
 let soundPlaying = false;
 let soundTimer = null;
 let currentAudioContext = null;
-let fallbackAudio = null;
 
-// Main sound function with multiple fallbacks
-function playAlertSound() {
-    console.log("🔊 Attempting to play alert sound");
+// Each play gets its own short-lived AudioContext so close() = instant silence.
+let activeSoundContext = null;
+let activeSoundNodes = null;
+
+// Warms up browser audio engine on first user gesture
+let audioUnlocked = false;
+
+function unlockAudio() {
+    if (audioUnlocked) return;
+    audioUnlocked = true;
+    console.log("🔓 Audio unlocked via user gesture");
+    try {
+        const warmup = new (window.AudioContext || window.webkitAudioContext)();
+        warmup.resume().then(() => warmup.close()).catch(() => {});
+    } catch (e) {}
+}
+
+document.addEventListener('click', unlockAudio, { passive: true });
+document.addEventListener('touchstart', unlockAudio, { passive: true });
+document.addEventListener('keydown', unlockAudio, { passive: true });
+
+// Stop any playing sound immediately
+function stopAlertSound() {
+    console.log("🔇 Stopping alert sound...");
     
-    // Method 1: Web Audio API (best quality)
-    if (window.AudioContext || window.webkitAudioContext) {
-        playWebAudio();
+    if (currentBobSoundTimeout) {
+        clearTimeout(currentBobSoundTimeout);
+        currentBobSoundTimeout = null;
+    }
+    
+    if (soundTimer) {
+        clearTimeout(soundTimer);
+        soundTimer = null;
+    }
+    
+    if (activeSoundNodes) {
+        try {
+            if (activeSoundNodes.gain) {
+                activeSoundNodes.gain.gain.setValueAtTime(0, activeSoundNodes.gain.context.currentTime);
+            }
+        } catch (e) {}
+        try {
+            if (activeSoundNodes.oscillator) {
+                activeSoundNodes.oscillator.stop();
+            }
+        } catch (e) {}
+        try {
+            if (activeSoundNodes.modulator) {
+                activeSoundNodes.modulator.stop();
+            }
+        } catch (e) {}
+        activeSoundNodes = null;
+    }
+    
+    if (activeSoundContext) {
+        try {
+            activeSoundContext.close();
+        } catch (e) {}
+        activeSoundContext = null;
+    }
+    
+    soundPlaying = false;
+    currentBobSoundPlaying = false;
+}
+
+// Play sound for a Bob (unique sound per Bob)
+function playBobSound() {
+    // Don't play if a sound is already playing for current Bob
+    if (currentBobSoundPlaying) {
+        console.log("🔊 Sound already playing for current Bob, skipping");
         return;
     }
     
-    // Method 2: HTML5 Audio fallback
-    playHtml5Audio();
-}
-
-function playWebAudio() {
+    console.log("🔊 Playing Bob alert sound");
+    stopAlertSound(); // Kill any previous sound first
+    
+    currentBobSoundPlaying = true;
+    
     try {
-        // Stop any currently playing sound
-        if (soundPlaying) {
-            if (soundTimer) clearTimeout(soundTimer);
-            if (currentAudioContext) {
-                try { currentAudioContext.close(); } catch(e) {}
-            }
-            soundPlaying = false;
-        }
-        
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        currentAudioContext = ctx;
+        activeSoundContext = ctx;
         
-        // Force resume if suspended (browser autoplay policy)
-        const resumeAudio = () => {
-            if (ctx.state === 'suspended') {
-                ctx.resume().then(() => {
-                    playSoundInternal(ctx);
-                }).catch(e => {
-                    console.log("WebAudio resume failed, using fallback");
-                    playHtml5Audio();
-                });
-            } else {
-                playSoundInternal(ctx);
+        const doPlay = () => {
+            try {
+                const now = ctx.currentTime;
+                const alarm = ctx.createOscillator();
+                const gain = ctx.createGain();
+                const modulator = ctx.createOscillator();
+                const modGain = ctx.createGain();
+                
+                alarm.connect(gain);
+                gain.connect(ctx.destination);
+                modulator.connect(modGain);
+                modGain.connect(gain.gain);
+                
+                alarm.type = 'square';
+                alarm.frequency.value = 880;
+                modulator.type = 'square';
+                modulator.frequency.value = 4;
+                modGain.gain.value = 0.4;
+                gain.gain.setValueAtTime(0.5, now);
+                
+                alarm.start(now);
+                modulator.start(now);
+                
+                activeSoundNodes = { oscillator: alarm, modulator: modulator, gain: gain };
+                
+                // Auto-stop after 2 seconds (natural end of Bob sound)
+                soundTimer = setTimeout(() => {
+                    stopAlertSound();
+                }, 2000);
+            } catch (e) {
+                console.log("WebAudio error:", e);
+                stopAlertSound();
+                playFallbackBeep();
             }
         };
         
-        // Try to resume immediately
-        resumeAudio();
-        
-        // Also try on user interaction if needed
         if (ctx.state === 'suspended') {
-            const resumeOnClick = () => {
-                ctx.resume().then(() => {
-                    document.removeEventListener('click', resumeOnClick);
-                    document.removeEventListener('touchstart', resumeOnClick);
-                }).catch(e => {});
-            };
-            document.addEventListener('click', resumeOnClick);
-            document.addEventListener('touchstart', resumeOnClick);
+            ctx.resume().then(doPlay).catch(() => {
+                stopAlertSound();
+                playFallbackBeep();
+            });
+        } else {
+            doPlay();
         }
-        
-    } catch(e) {
-        console.log("WebAudio error:", e);
-        playHtml5Audio();
+    } catch (e) {
+        console.log("AudioContext create error:", e);
+        playFallbackBeep();
     }
 }
 
-function playSoundInternal(ctx) {
+function playFallbackBeep() {
     try {
-        soundPlaying = true;
-        const now = ctx.currentTime;
-        
-        // Create oscillators
-        const alarm = ctx.createOscillator();
-        const gain = ctx.createGain();
-        const modulator = ctx.createOscillator();
-        const modGain = ctx.createGain();
-        
-        alarm.connect(gain);
-        gain.connect(ctx.destination);
-        modulator.connect(modGain);
-        modGain.connect(gain.gain);
-        
-        alarm.type = 'square';
-        alarm.frequency.value = 880;
-        modulator.type = 'square';
-        modulator.frequency.value = 4;
-        modGain.gain.value = 0.4;
-        
-        gain.gain.setValueAtTime(0.5, now);
-        
-        alarm.start(now);
-        modulator.start(now);
-        
-        // Stop after 2 seconds
-        soundTimer = setTimeout(() => {
-            try {
-                alarm.stop(now + 2);
-                modulator.stop(now + 2);
-                setTimeout(() => {
-                    if (currentAudioContext === ctx) {
-                        ctx.close().catch(e => {});
-                    }
-                    soundPlaying = false;
-                }, 100);
-            } catch(e) {
-                soundPlaying = false;
-            }
-        }, 100);
-        
-    } catch(e) {
-        console.log("Play internal error:", e);
-        soundPlaying = false;
-        playHtml5Audio();
-    }
-}
-
-function playHtml5Audio() {
-    try {
-        // Create a simple beep using Audio element with data URI
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         const oscillator = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
@@ -143,103 +184,132 @@ function playHtml5Audio() {
         gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
         oscillator.start();
         oscillator.stop(audioCtx.currentTime + 0.8);
-        
-        // Also try to resume
         if (audioCtx.state === 'suspended') {
             audioCtx.resume();
         }
-        
         setTimeout(() => {
             audioCtx.close().catch(e => {});
         }, 1000);
-        
-    } catch(e) {
-        console.log("HTML5 Audio error:", e);
-        // Last resort - try to use a simple beep
-        try {
-            const beep = new Audio();
-            beep.src = "data:audio/wav;base64,U3RlYWx0aCBzb3VuZA==";
-            beep.volume = 0.5;
-            beep.play().catch(() => {});
-        } catch(e2) {}
+    } catch (e) {
+        console.log("Fallback audio error:", e);
     }
 }
 
-// ===================== CRITICAL ALERT INTERVAL (EVERY 5 MINUTES) =====================
-let criticalAlertInterval = null;
+// ===================== BOB NOTIFICATION SYSTEM =====================
 
-function startCriticalAlertChecker() {
-    if (criticalAlertInterval) clearInterval(criticalAlertInterval);
+// Check if a Bob was shown too recently (prevents duplicates)
+function isDuplicateBob(type, message) {
+    const now = Date.now();
     
-    criticalAlertInterval = setInterval(() => {
-        const hasActiveCritical = 
-            activeAlertConditions.soil_critical ||
-            activeAlertConditions.temp_critical ||
-            activeAlertConditions.water_critical ||
-            activeAlertConditions.hum_critical;
-        
-        if (hasActiveCritical) {
-            console.log("🔊 5-minute critical alert - playing sound");
-            playAlertSound();
-            
-            if (activeAlertConditions.soil_critical) {
-                showBobNotification("🚨 CRITICAL ALERT", "Soil is extremely dry! Water immediately!", "critical", 8000, false);
-            } else if (activeAlertConditions.temp_critical) {
-                showBobNotification("🚨 CRITICAL ALERT", "Extreme temperature! Provide shade!", "critical", 8000, false);
-            } else if (activeAlertConditions.water_critical) {
-                showBobNotification("🚨 CRITICAL ALERT", "Water tank is empty! Activate collection!", "critical", 8000, false);
-            } else if (activeAlertConditions.hum_critical) {
-                showBobNotification("🚨 CRITICAL ALERT", "Very low humidity! Poor water collection!", "critical", 8000, false);
-            }
+    // Check cooldown between Bobs
+    if (now - lastBobEndTime < BOB_COOLDOWN) {
+        console.log(`⚠️ Duplicate Bob prevented: Cooldown active (${now - lastBobEndTime}ms since last Bob ended)`);
+        return true;
+    }
+    
+    // Check if same type with similar message was shown recently
+    const key = `${type}_${message.substring(0, 50)}`;
+    const lastShown = recentBobsShown.get(key);
+    
+    if (lastShown && (now - lastShown) < BOB_DEDUPE_DELAY) {
+        console.log(`⚠️ Duplicate Bob prevented: ${type} - "${message.substring(0, 40)}..." (${now - lastShown}ms ago)`);
+        return true;
+    }
+    
+    // Check if there's an active Bob with same type
+    if (currentActiveBobId && currentActiveBobId.includes(type)) {
+        console.log(`⚠️ Duplicate Bob prevented: Another ${type} Bob is still active`);
+        return true;
+    }
+    
+    // Store this Bob as shown
+    recentBobsShown.set(key, now);
+    
+    // Clean old entries (older than 1 minute)
+    for (const [k, t] of recentBobsShown.entries()) {
+        if (now - t > 60000) {
+            recentBobsShown.delete(k);
         }
-    }, 300000);
+    }
+    
+    return false;
 }
 
 function processBobQueue() {
+    // Prevent processing if a Bob is showing or queue is empty
     if (isBobShowing || bobQueue.length === 0) return;
     
-    isBobShowing = true;
-    const { title, message, type, duration, playSound, bobId } = bobQueue.shift();
-    
-    if (playSound) {
-        playAlertSound();
+    // Check cooldown
+    const now = Date.now();
+    if (now - lastBobEndTime < BOB_COOLDOWN) {
+        console.log(`⏳ Bob cooldown active, delaying next Bob...`);
+        setTimeout(processBobQueue, BOB_COOLDOWN - (now - lastBobEndTime));
+        return;
     }
-    
-    let existingBob = document.getElementById("bobNotification");
+
+    isBobShowing = true;
+    const { title, message, type, duration, bobId, playSound } = bobQueue.shift();
+    currentActiveBobId = bobId;
+
+    // Play sound ONLY when Bob appears (if requested)
+    if (playSound) {
+        playBobSound();
+    }
+
+    // Remove any existing Bob to prevent stacking
+    const existingBob = document.getElementById("bobNotification");
     if (existingBob) existingBob.remove();
-    
+
     const bob = document.createElement("div");
     bob.id = "bobNotification";
     bob.setAttribute("data-bob-id", bobId);
     bob.className = `bob-notification bob-${type}`;
+    
     let icon = "ℹ️";
     if (type === "critical") icon = "🚨";
     else if (type === "warning") icon = "⚠️";
     else if (type === "success") icon = "✅";
-    
+    else if (type === "overflow") icon = "💧💦";
+
     bob.innerHTML = `
         <div class="bob-content">
             <div class="bob-icon">${icon}</div>
             <div class="bob-text">
-                <div class="bob-title">${title}</div>
-                <div class="bob-message">${message}</div>
+                <div class="bob-title">${escapeHtml(title)}</div>
+                <div class="bob-message">${escapeHtml(message)}</div>
             </div>
             <button class="bob-close" onclick="window.closeCurrentBob('${bobId}')">✕</button>
         </div>
         <div class="bob-progress" style="animation-duration: ${duration/1000}s"></div>
     `;
     document.body.appendChild(bob);
-    
+
+    // Auto-close after duration
     const timeoutId = setTimeout(() => {
         const currentBob = document.getElementById("bobNotification");
         if (currentBob && currentBob.getAttribute("data-bob-id") === bobId) {
+            console.log(`⏰ Bob expired naturally: ${title}`);
             currentBob.remove();
             isBobShowing = false;
+            currentActiveBobId = null;
+            lastBobEndTime = Date.now();
+            // Stop sound when Bob expires
+            stopAlertSound();
             processBobQueue();
         }
     }, duration);
-    
+
     bob.setAttribute("data-timeout-id", timeoutId);
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/[&<>]/g, function(m) {
+        if (m === '&') return '&amp;';
+        if (m === '<') return '&lt;';
+        if (m === '>') return '&gt;';
+        return m;
+    });
 }
 
 window.closeCurrentBob = function(bobId) {
@@ -249,29 +319,56 @@ window.closeCurrentBob = function(bobId) {
         if (timeoutId) clearTimeout(parseInt(timeoutId));
         bob.remove();
         isBobShowing = false;
+        currentActiveBobId = null;
+        lastBobEndTime = Date.now();
+        // Stop the sound immediately when user closes
+        console.log("❌ Bob closed by user - stopping sound");
+        stopAlertSound();
         processBobQueue();
     }
 };
 
-function showBobNotification(title, message, type, duration = 8000, playSound = false) {
-    const bobId = Date.now() + "_" + Math.random().toString(36).substr(2, 6);
-    bobQueue.push({ title, message, type, duration, playSound, bobId });
+function showBobNotification(title, message, type, duration = 8000, playSound = true) {
+    // Prevent duplicate Bobs
+    if (isDuplicateBob(type, message)) {
+        return;
+    }
+    
+    const bobId = Date.now() + "_" + type + "_" + Math.random().toString(36).substr(2, 6);
+    bobQueue.push({ title, message, type, duration, bobId, playSound });
     processBobQueue();
 }
+
+// ===================== ALERTS UI =====================
+
+// Track alerts to prevent duplicates
+const addedAlerts = new Map();
 
 function addAlertToUI(alertId, message, type, playSound = false) {
     const alertsBox = document.getElementById("alertsContainer");
     if (!alertsBox) return;
-    if (document.getElementById(`alert-${alertId}`)) return;
     
+    // Check for duplicate alert in UI
+    const existingAlert = document.getElementById(`alert-${alertId}`);
+    if (existingAlert) return;
+    
+    // Check for duplicate within 10 seconds
+    const alertKey = `${alertId}_${type}`;
+    const lastAdded = addedAlerts.get(alertKey);
+    if (lastAdded && (Date.now() - lastAdded) < 10000) {
+        console.log(`⚠️ Duplicate alert prevented: ${alertKey}`);
+        return;
+    }
+    addedAlerts.set(alertKey, Date.now());
+
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const alertClass = type === 'critical' ? 'alert-critical' : (type === 'warning' ? 'alert-warning' : 'alert-success');
-    const icon = type === 'critical' ? '🚨' : (type === 'warning' ? '⚠️' : '✅');
+    let alertClass = type === 'critical' ? 'alert-critical' : (type === 'warning' ? 'alert-warning' : 'alert-success');
+    let icon = type === 'critical' ? '🚨' : (type === 'warning' ? '⚠️' : (type === 'overflow' ? '💧💦' : '✅'));
 
     if (alertsBox.querySelector('.no-alerts-message')) {
         alertsBox.innerHTML = '';
     }
-    
+
     const uniqueId = `${alertId}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
     const alertDiv = document.createElement('div');
     alertDiv.id = `alert-${uniqueId}`;
@@ -282,24 +379,28 @@ function addAlertToUI(alertId, message, type, playSound = false) {
     alertDiv.style.borderRadius = "10px";
     alertDiv.innerHTML = `
         <div style="font-size:18px;">${icon}</div>
-        <div style="flex:1;padding-right:25px;"><strong style="font-size:13px;">${message}</strong><div style="font-size:10px;opacity:0.7;">${timeStr}</div></div>
+        <div style="flex:1;padding-right:25px;"><strong style="font-size:13px;">${escapeHtml(message)}</strong><div style="font-size:10px;opacity:0.7;">${timeStr}</div></div>
         <button onclick="window.dismissAlert('${uniqueId}')" style="background:none;border:none;cursor:pointer;font-size:14px;color:currentColor;position:absolute;right:8px;top:50%;transform:translateY(-50%);opacity:0.6;">✕</button>
     `;
-    
+
     alertsBox.insertBefore(alertDiv, alertsBox.firstChild);
-    
+
+    // Play sound if requested
     if (playSound) {
-        playAlertSound();
+        playBobSound();
     }
-    
+
+    // Show Bob notification for critical, warning, and overflow alerts
     if (type === 'critical') {
-        showBobNotification("🚨 Critical Alert", message, "critical", 15000, false);
+        showBobNotification("🚨 Critical Alert", message, "critical", 15000, true);
         const bell = document.getElementById("notifToggle");
         if (bell) bell.classList.add("ringing");
     } else if (type === 'warning') {
-        showBobNotification("⚠️ Warning", message, "warning", 10000, false);
+        showBobNotification("⚠️ Warning", message, "warning", 10000, true);
+    } else if (type === 'overflow') {
+        showBobNotification("💧 Overflow Alert", message, "warning", 10000, true);
     }
-    
+
     updateBadge();
     setTimeout(showNoAlertsMessage, 100);
 }
@@ -346,13 +447,61 @@ function updateBadge() {
     }
 }
 
-// CORRECT water value conversion for tank (0-12 sensor value)
+// Water value conversion for tank (0-12 sensor value)
+// Note: water sensor: 0 = full, 12 = empty
 function waterValueToPercent(waterValue) {
     if (waterValue === undefined || waterValue === null) return 0;
-    // Clamp between 0 and 12 (sensor range)
     const clamped = Math.min(12, Math.max(0, waterValue));
-    // Convert: 12 = empty (0%), 0 = full (100%)
+    // Convert: 12 (empty) = 0%, 0 (full) = 100%
     return Math.round(((12 - clamped) / 12) * 100);
+}
+
+// Get raw water value from sensor
+function getRawWaterValue(waterValue) {
+    if (waterValue === undefined || waterValue === null) return 12;
+    return Math.min(12, Math.max(0, waterValue));
+}
+
+// ===================== CRITICAL ALERT INTERVAL (EVERY 5 MINUTES) =====================
+let criticalAlertInterval = null;
+let lastCriticalAlertTime = 0;
+
+function startCriticalAlertChecker() {
+    if (criticalAlertInterval) clearInterval(criticalAlertInterval);
+
+    criticalAlertInterval = setInterval(() => {
+        const hasActiveCritical =
+            activeAlertConditions.soil_critical ||
+            activeAlertConditions.temp_critical ||
+            activeAlertConditions.water_critical ||
+            activeAlertConditions.hum_critical ||
+            activeAlertConditions.water_overflow_critical;
+
+        if (hasActiveCritical) {
+            const now = Date.now();
+            // Prevent duplicate critical alerts within 4.5 minutes (safety margin)
+            if (now - lastCriticalAlertTime < 270000) {
+                console.log("⏭️ Skipping 5-minute critical alert - too soon since last");
+                return;
+            }
+            lastCriticalAlertTime = now;
+            
+            console.log("🔊 5-minute critical alert - playing sound and showing Bob");
+            
+            // Determine which critical condition is active (priority order)
+            if (activeAlertConditions.water_overflow_critical) {
+                showBobNotification("🚨 CRITICAL ALERT", "Water tank is OVERFLOWING! Emergency shutdown!", "critical", 8000, true);
+            } else if (activeAlertConditions.soil_critical) {
+                showBobNotification("🚨 CRITICAL ALERT", "Soil is extremely dry! Water immediately!", "critical", 8000, true);
+            } else if (activeAlertConditions.temp_critical) {
+                showBobNotification("🚨 CRITICAL ALERT", "Extreme temperature! Provide shade!", "critical", 8000, true);
+            } else if (activeAlertConditions.water_critical) {
+                showBobNotification("🚨 CRITICAL ALERT", "Water tank is empty! Activate collection!", "critical", 8000, true);
+            } else if (activeAlertConditions.hum_critical) {
+                showBobNotification("🚨 CRITICAL ALERT", "Very low humidity! Poor water collection!", "critical", 8000, true);
+            }
+        }
+    }, 300000); // 5 minutes
 }
 
 // ===================== UNIVERSAL SENSOR LISTENER =====================
@@ -361,9 +510,9 @@ function startUniversalSensorListener() {
         setTimeout(startUniversalSensorListener, 1000);
         return;
     }
-    
+
     console.log("🔥 Starting universal sensor listener");
-    
+
     window.hydroGenDB.ref('sensors').on('value', (snapshot) => {
         const data = snapshot.val();
         if (data) {
@@ -373,24 +522,76 @@ function startUniversalSensorListener() {
     });
 }
 
+// Throttle alert checks to prevent rapid fire
+let lastAlertCheckTime = 0;
+let pendingAlertCheck = false;
+
 function checkSensorAlerts(sensorData) {
     if (!sensorData) return;
     
-    const hadCriticalBefore = 
+    const now = Date.now();
+    if (now - lastAlertCheckTime < 500) {
+        if (!pendingAlertCheck) {
+            pendingAlertCheck = true;
+            setTimeout(() => {
+                pendingAlertCheck = false;
+                checkSensorAlerts(sensorData);
+            }, 500);
+        }
+        return;
+    }
+    lastAlertCheckTime = now;
+
+    const hadCriticalBefore =
         activeAlertConditions.soil_critical ||
         activeAlertConditions.temp_critical ||
         activeAlertConditions.water_critical ||
-        activeAlertConditions.hum_critical;
-    
+        activeAlertConditions.hum_critical ||
+        activeAlertConditions.water_overflow_critical;
+
     // Get REAL values from Firebase
     const soil = Number(sensorData.soil) || 0;
     const temp = Number(sensorData.temp) || 0;
     const hum = Number(sensorData.hum) || 0;
-    const waterValue = Number(sensorData.water) || 12;
-    const waterPercent = waterValueToPercent(waterValue);
+    const rawWater = Number(sensorData.water) !== undefined ? Number(sensorData.water) : 12;
+    const waterPercent = waterValueToPercent(rawWater);
     
-    console.log(`Soil: ${soil}%, Temp: ${temp}°C, Humidity: ${hum}%, Tank: ${waterPercent}%`);
-    
+    // For overflow detection, we need the raw sensor value
+    // Raw water sensor: 0 = FULL (tank full), 12 = EMPTY
+    const isTankFull = rawWater <= 0.5; // Sensor reading 0-0.5 means tank is completely full
+    const isTankNearFull = rawWater <= 1.5; // Sensor reading 1.5 or less means near full
+
+    console.log(`Soil: ${soil}%, Temp: ${temp}°C, Humidity: ${hum}%, Tank: ${waterPercent}%, RawWater: ${rawWater}, isFull: ${isTankFull}`);
+
+    // ===================== WATER LEVEL OVERFLOW ALERTS (NEW) =====================
+    // CRITICAL OVERFLOW - Tank is completely full (sensor reading 0)
+    if (isTankFull && !activeAlertConditions.water_overflow_critical) {
+        activeAlertConditions.water_overflow_critical = true;
+        addAlertToUI("water_overflow_critical", `🚨💦 CRITICAL: Water tank is OVERFLOWING! Emergency stop recommended!`, "critical", true);
+        console.log("💦💦 WATER OVERFLOW CRITICAL ALERT TRIGGERED! 💦💦");
+    } 
+    // Warning overflow - Tank is near full (sensor reading <= 1.5)
+    else if (isTankNearFull && !activeAlertConditions.water_overflow_warning && !activeAlertConditions.water_overflow_critical) {
+        activeAlertConditions.water_overflow_warning = true;
+        addAlertToUI("water_overflow_warning", `⚠️💧 Warning: Water tank is nearly full (${waterPercent}%)! Consider pausing collection.`, "warning", true);
+        console.log("💦 Water near full warning");
+    }
+    // Reset overflow alerts when tank level drops below 85% (rawWater > 2.5)
+    else if (!isTankNearFull && rawWater > 2.5 && (activeAlertConditions.water_overflow_warning || activeAlertConditions.water_overflow_critical)) {
+        if (activeAlertConditions.water_overflow_critical) {
+            activeAlertConditions.water_overflow_critical = false;
+            removeResolvedAlert("water_overflow_critical");
+            addAlertToUI(`water_overflow_reset_${Date.now()}`, `✅ Water level normalized - overflow risk cleared`, "success", false);
+            console.log("✅ Water overflow critical cleared");
+        }
+        if (activeAlertConditions.water_overflow_warning) {
+            activeAlertConditions.water_overflow_warning = false;
+            removeResolvedAlert("water_overflow_warning");
+            addAlertToUI(`water_overflow_warning_reset_${Date.now()}`, `✅ Water level normalized`, "success", false);
+            console.log("✅ Water overflow warning cleared");
+        }
+    }
+
     // Soil alerts
     if (soil < 20 && !activeAlertConditions.soil_critical) {
         activeAlertConditions.soil_critical = true;
@@ -406,7 +607,7 @@ function checkSensorAlerts(sensorData) {
         activeAlertConditions.soil_warning = false;
         removeResolvedAlert("soil_warning");
     }
-    
+
     // Temperature alerts
     if (temp > 42 && !activeAlertConditions.temp_critical) {
         activeAlertConditions.temp_critical = true;
@@ -422,23 +623,23 @@ function checkSensorAlerts(sensorData) {
         activeAlertConditions.temp_warning = false;
         removeResolvedAlert("temp_warning");
     }
-    
-    // Water tank alerts (CORRECT calculation from Firebase sensor)
-    if (waterPercent < 10 && !activeAlertConditions.water_critical) {
+
+    // Water tank LOW alerts (empty tank)
+    if (waterPercent < 10 && !activeAlertConditions.water_critical && !activeAlertConditions.water_overflow_critical) {
         activeAlertConditions.water_critical = true;
         addAlertToUI("water_critical", `💧 CRITICAL: Water tank empty (${Math.round(waterPercent)}%)! Activate collection!`, "critical", true);
     } else if (waterPercent >= 20 && activeAlertConditions.water_critical) {
         activeAlertConditions.water_critical = false;
         removeResolvedAlert("water_critical");
         addAlertToUI(`water_recovered_${Date.now()}`, `✅ Water tank level recovered to ${Math.round(waterPercent)}%`, "success", false);
-    } else if (waterPercent >= 10 && waterPercent < 25 && !activeAlertConditions.water_warning && !activeAlertConditions.water_critical) {
+    } else if (waterPercent >= 10 && waterPercent < 25 && !activeAlertConditions.water_warning && !activeAlertConditions.water_critical && !activeAlertConditions.water_overflow_warning) {
         activeAlertConditions.water_warning = true;
         addAlertToUI("water_warning", `⚠️ Water tank low (${Math.round(waterPercent)}%) — Refill soon`, "warning", true);
     } else if (waterPercent >= 25 && activeAlertConditions.water_warning) {
         activeAlertConditions.water_warning = false;
         removeResolvedAlert("water_warning");
     }
-    
+
     // Humidity alerts
     if (hum < 20 && !activeAlertConditions.hum_critical) {
         activeAlertConditions.hum_critical = true;
@@ -454,13 +655,25 @@ function checkSensorAlerts(sensorData) {
         activeAlertConditions.hum_warning = false;
         removeResolvedAlert("hum_warning");
     }
-    
-    const hasCriticalNow = 
+
+    // Rain alerts
+    const rainDetected = sensorData.rain !== undefined ? Number(sensorData.rain) === 0 : false;
+    if (rainDetected && !activeAlertConditions.rain_warning) {
+        activeAlertConditions.rain_warning = true;
+        addAlertToUI("rain_warning", `🌧️ Rain detected! Pause irrigation to conserve water.`, "warning", true);
+    } else if (!rainDetected && activeAlertConditions.rain_warning) {
+        activeAlertConditions.rain_warning = false;
+        removeResolvedAlert("rain_warning");
+        addAlertToUI(`rain_cleared_${Date.now()}`, `✅ Rain stopped — irrigation can resume.`, "success", false);
+    }
+
+    const hasCriticalNow =
         activeAlertConditions.soil_critical ||
         activeAlertConditions.temp_critical ||
         activeAlertConditions.water_critical ||
-        activeAlertConditions.hum_critical;
-    
+        activeAlertConditions.hum_critical ||
+        activeAlertConditions.water_overflow_critical;
+
     if (hasCriticalNow && !hadCriticalBefore) {
         startCriticalAlertChecker();
     } else if (!hasCriticalNow && hadCriticalBefore) {
@@ -469,7 +682,7 @@ function checkSensorAlerts(sensorData) {
             criticalAlertInterval = null;
         }
     }
-    
+
     setTimeout(showNoAlertsMessage, 100);
 }
 
@@ -499,7 +712,7 @@ window.dismissAlertByType = function(alertType) {
 function showToast(message, duration = 3000) {
     const existingToast = document.getElementById('globalToast');
     if (existingToast) existingToast.remove();
-    
+
     const toast = document.createElement('div');
     toast.id = 'globalToast';
     toast.innerHTML = `
@@ -516,11 +729,11 @@ function showToast(message, duration = 3000) {
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
             animation: toastFadeIn 0.3s ease;
         ">
-            ${message}
+            ${escapeHtml(message)}
         </div>
     `;
     document.body.appendChild(toast);
-    
+
     if (!document.querySelector('#toastStyles')) {
         const style = document.createElement('style');
         style.id = 'toastStyles';
@@ -536,7 +749,7 @@ function showToast(message, duration = 3000) {
         `;
         document.head.appendChild(style);
     }
-    
+
     setTimeout(() => {
         const toastEl = document.getElementById('globalToast');
         if (toastEl) {
@@ -551,28 +764,90 @@ function showToast(message, duration = 3000) {
 window.showToast = showToast;
 
 // ===================== PLAY ALERT ON PAGE RELOAD =====================
+let reloadSoundPlayed = false;
+let reloadAttemptCount = 0;
+
 async function checkAndPlayAlertOnReload() {
-    if (!window.hydroGenDB) return;
-    
+    if (!window.hydroGenDB) {
+        if (reloadAttemptCount < 10) {
+            reloadAttemptCount++;
+            setTimeout(checkAndPlayAlertOnReload, 500);
+        }
+        return;
+    }
+
     try {
         const snapshot = await window.hydroGenDB.ref('sensors').once('value');
         const data = snapshot.val();
-        
-        if (data) {
+
+        if (data && !reloadSoundPlayed) {
             const soil = Number(data.soil) || 0;
             const temp = Number(data.temp) || 0;
-            const waterPercent = waterValueToPercent(Number(data.water));
-            
+            const rawWater = Number(data.water) !== undefined ? Number(data.water) : 12;
+            const waterPercent = waterValueToPercent(rawWater);
+            const hum = Number(data.hum) || 0;
+            const isTankFull = rawWater <= 0.5;
+
             const hasCriticalCondition = (
                 soil < 20 ||
                 temp > 42 ||
-                waterPercent < 10
+                waterPercent < 10 ||
+                hum < 20 ||
+                isTankFull
             );
-            
+
             if (hasCriticalCondition) {
-                setTimeout(() => playAlertSound(), 1000);
-                console.log("🔊 Alert played on page reload");
-                startCriticalAlertChecker();
+                reloadSoundPlayed = true;
+                reloadBobShown = true;
+                
+                console.log("🔊 Page reload detected - critical condition found!");
+                
+                // Play sound after a short delay (ensures DOM is ready)
+                setTimeout(() => {
+                    console.log("🔊 Playing alert sound on page reload");
+                    playBobSound();
+                    
+                    // Show the most urgent Bob
+                    if (isTankFull) {
+                        showBobNotification("🚨 CRITICAL ALERT", "Water tank is OVERFLOWING! Emergency shutdown!", "critical", 8000, true);
+                        if (!activeAlertConditions.water_overflow_critical) {
+                            activeAlertConditions.water_overflow_critical = true;
+                            addAlertToUI("water_overflow_critical", `🚨💦 CRITICAL: Water tank is OVERFLOWING! Emergency stop recommended!`, "critical", false);
+                        }
+                    } else if (soil < 20) {
+                        showBobNotification("🚨 CRITICAL ALERT", `Soil is extremely dry (${soil}%)! Water immediately!`, "critical", 8000, true);
+                        if (!activeAlertConditions.soil_critical) {
+                            activeAlertConditions.soil_critical = true;
+                            addAlertToUI("soil_critical", `🚨 CRITICAL: Soil extremely dry (${soil}%)! Water immediately!`, "critical", false);
+                        }
+                    } else if (temp > 42) {
+                        showBobNotification("🚨 CRITICAL ALERT", `Extreme temperature (${temp}°C)! Provide shade!`, "critical", 8000, true);
+                        if (!activeAlertConditions.temp_critical) {
+                            activeAlertConditions.temp_critical = true;
+                            addAlertToUI("temp_critical", `🔥 CRITICAL: Extreme temperature (${temp}°C)! Provide shade!`, "critical", false);
+                        }
+                    } else if (waterPercent < 10) {
+                        showBobNotification("🚨 CRITICAL ALERT", `Water tank is empty (${Math.round(waterPercent)}%)! Activate collection!`, "critical", 8000, true);
+                        if (!activeAlertConditions.water_critical) {
+                            activeAlertConditions.water_critical = true;
+                            addAlertToUI("water_critical", `💧 CRITICAL: Water tank empty (${Math.round(waterPercent)}%)! Activate collection!`, "critical", false);
+                        }
+                    } else if (hum < 20) {
+                        showBobNotification("🚨 CRITICAL ALERT", `Very low humidity (${hum}%)! Poor water collection!`, "critical", 8000, true);
+                        if (!activeAlertConditions.hum_critical) {
+                            activeAlertConditions.hum_critical = true;
+                            addAlertToUI("hum_critical", `💨 CRITICAL: Very low humidity (${hum}%)! Poor water collection!`, "critical", false);
+                        }
+                    }
+                    
+                    startCriticalAlertChecker();
+                }, 1000);
+                
+                // Reset reload flag after 10 seconds to allow new Bobs
+                setTimeout(() => { 
+                    reloadBobShown = false; 
+                    console.log("🔓 Reload Bob flag reset");
+                }, 10000);
             }
         }
     } catch(e) {
@@ -580,38 +855,18 @@ async function checkAndPlayAlertOnReload() {
     }
 }
 
+// Initialize on page load with multiple attempts
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
-        setTimeout(checkAndPlayAlertOnReload, 1500);
+        setTimeout(checkAndPlayAlertOnReload, 1000);
+        setTimeout(checkAndPlayAlertOnReload, 3000);
+        setTimeout(checkAndPlayAlertOnReload, 5000);
     });
 } else {
-    setTimeout(checkAndPlayAlertOnReload, 1500);
+    setTimeout(checkAndPlayAlertOnReload, 1000);
+    setTimeout(checkAndPlayAlertOnReload, 3000);
+    setTimeout(checkAndPlayAlertOnReload, 5000);
 }
-
-// Force audio to work on ANY browser - unlock on first user interaction
-let audioUnlocked = false;
-function unlockAudio() {
-    if (audioUnlocked) return;
-    audioUnlocked = true;
-    
-    // Create a silent context to unlock audio
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === 'suspended') {
-        ctx.resume().then(() => {
-            ctx.close();
-        }).catch(e => {});
-    } else {
-        ctx.close();
-    }
-    
-    document.removeEventListener('click', unlockAudio);
-    document.removeEventListener('touchstart', unlockAudio);
-    document.removeEventListener('keydown', unlockAudio);
-}
-
-document.addEventListener('click', unlockAudio);
-document.addEventListener('touchstart', unlockAudio);
-document.addEventListener('keydown', unlockAudio);
 
 // ================= ORIGINAL THEME.JS CODE BELOW (UNCHANGED) =================
 

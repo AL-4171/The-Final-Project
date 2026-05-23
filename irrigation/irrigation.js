@@ -1,5 +1,7 @@
-// ================= IRRIGATION.JS - CLEAN VERSION =================
-// All alerts/bobs/sounds/theme code removed - now handled by theme.js
+// ================= IRRIGATION.JS - FINAL FIXED VERSION =================
+// FIXED: Zone START/STOP - Bob only, NO sound, ring alert NO sound
+// FIXED: Soil target slider - shows real-time value in create AND edit forms
+// FIXED: Schedule days - properly editable in BOTH create AND edit forms
 
 (function () {
     if (!localStorage.getItem("hydroUser")) {
@@ -75,6 +77,59 @@ function validateDates(startDate, endDate) {
 function getZoneTypeName(icon) {
     const types = { '🌱': 'Garden', '🥕': 'Vegetables', '🌻': 'Flowers', '🌿': 'Herbs', '🍓': 'Fruits' };
     return types[icon] || 'Garden';
+}
+
+// ===================== SOIL TARGET SLIDER FUNCTIONS =====================
+function setupSoilTargetSlider() {
+    const soilSlider = document.getElementById('zoneSoilTarget');
+    const soilValue = document.getElementById('soilTargetValue');
+    if (soilSlider && soilValue) {
+        soilSlider.addEventListener('input', function() {
+            soilValue.innerText = this.value + '%';
+        });
+    }
+}
+
+function setupEditSoilTargetSlider() {
+    const editSoilSlider = document.getElementById('editZoneSoilTarget');
+    const editSoilValue = document.getElementById('editSoilTargetValue');
+    if (editSoilSlider && editSoilValue) {
+        editSoilSlider.addEventListener('input', function() {
+            editSoilValue.innerText = this.value + '%';
+        });
+    }
+}
+
+// ===================== DAY SELECTOR FUNCTIONS =====================
+function setupDaySelectors(modalId) {
+    const modal = document.getElementById(modalId);
+    if (!modal) return;
+    
+    const daySelectors = modal.querySelectorAll('.day-selector');
+    daySelectors.forEach(selector => {
+        // Remove any existing listeners to avoid duplicates
+        const newSelector = selector.cloneNode(true);
+        selector.parentNode.replaceChild(newSelector, selector);
+        
+        const checkbox = newSelector.querySelector('.day-checkbox');
+        
+        // Click handler for the entire selector
+        newSelector.addEventListener('click', function(e) {
+            if (checkbox) {
+                checkbox.checked = !checkbox.checked;
+                if (checkbox.checked) {
+                    this.classList.add('active');
+                } else {
+                    this.classList.remove('active');
+                }
+            }
+        });
+        
+        // Set initial active class based on checkbox state
+        if (checkbox && checkbox.checked) {
+            newSelector.classList.add('active');
+        }
+    });
 }
 
 // ===================== LOAD DATA =====================
@@ -273,6 +328,7 @@ async function checkAndExecuteSchedules() {
         const waterPercent = waterValueToPercent(currentSensorData.water);
         if (waterPercent < 10) {
             window.showBobNotification("⚠️ Schedule Skipped", `Schedule "${schedule.name}" skipped - Water tank empty!`, "warning", 8000, true);
+            window.addAlertToUI(`schedule_skipped_${Date.now()}`, `⚠️ Schedule "${schedule.name}" skipped - Water tank empty!`, "warning", true);
             await saveActivityLog(`Schedule "${schedule.name}" skipped - Water tank low (${Math.round(waterPercent)}%)`, 'schedule_skipped');
             continue;
         }
@@ -284,7 +340,7 @@ async function checkAndExecuteSchedules() {
             await database.ref(`users_w/${currentUserId}/zones/${zone.id}`).update({ isRunning: true, lastStartedAt: Date.now() });
             await database.ref('controls/pump').set(1);
             
-            window.showBobNotification("💧 Schedule Started", `Schedule "${schedule.name}" started for zone "${zone.name}"`, "success", 8000, false);
+            window.showBobNotification("💧 Schedule Started", `Schedule "${schedule.name}" started for zone "${zone.name}"`, "success", 8000, true);
             window.addAlertToUI(`schedule_start_${Date.now()}`, `💧 Schedule "${schedule.name}" started - Zone "${zone.name}"`, "success", true);
             await saveActivityLog(`Schedule "${schedule.name}" started zone "${zone.name}" at ${schedule.time}`, 'schedule_start');
             
@@ -330,6 +386,7 @@ window.toggleZone = async function(zoneId) {
     if (newState) {
         const waterPercent = waterValueToPercent(currentSensorData.water);
         if (waterPercent < 10) {
+            window.showBobNotification("❌ Cannot Start", `Zone "${zone.name}" cannot start - Water tank empty!`, "warning", 5000, true);
             window.addAlertToUI(`zone_start_empty_${Date.now()}`, `❌ Cannot start "${zone.name}" - Water tank empty!`, "critical", true);
             return;
         }
@@ -337,7 +394,9 @@ window.toggleZone = async function(zoneId) {
         await database.ref(`users_w/${currentUserId}/zones/${zoneId}`).update({ isRunning: true, lastStartedAt: Date.now() });
         await database.ref('controls/pump').set(1);
         await saveActivityLog(`Started zone: ${zone.name}`, 'zone_start');
-        window.addAlertToUI(`zone_start_${Date.now()}`, `💧 Zone "${zone.name}" started irrigation`, "success", true);
+        // ZONE START - Bob only, NO sound, ring alert NO sound
+        window.showBobNotification("💧 Zone Started", `Zone "${zone.name}" started irrigation`, "success", 4000, false);
+        window.addAlertToUI(`zone_start_${Date.now()}`, `💧 Zone "${zone.name}" started irrigation`, "success", false);
         
         const durationMs = (zone.duration || 30) * 60 * 1000;
         setTimeout(async () => {
@@ -348,7 +407,7 @@ window.toggleZone = async function(zoneId) {
                 const anyRunning = Object.values(zonesSnapshot.val() || {}).some(z => z.isRunning);
                 if (!anyRunning) await database.ref('controls/pump').set(0);
                 await saveActivityLog(`Completed: ${zone.name}`, 'zone_complete');
-                window.addAlertToUI(`zone_complete_${Date.now()}`, `✅ Zone "${zone.name}" completed irrigation cycle`, "success", false);
+                window.showBobNotification("✅ Zone Completed", `Zone "${zone.name}" completed irrigation cycle`, "success", 4000, false);
                 await loadZones();
             }
         }, durationMs);
@@ -358,6 +417,8 @@ window.toggleZone = async function(zoneId) {
         const anyRunning = Object.values(zonesSnapshot.val() || {}).some(z => z.isRunning);
         if (!anyRunning) await database.ref('controls/pump').set(0);
         await saveActivityLog(`Stopped zone: ${zone.name}`, 'zone_stop');
+        // ZONE STOP - Bob only, NO sound, ring alert NO sound
+        window.showBobNotification("⏹️ Zone Stopped", `Zone "${zone.name}" stopped`, "info", 4000, false);
         window.addAlertToUI(`zone_stop_${Date.now()}`, `⏹️ Zone "${zone.name}" stopped`, "success", false);
     }
     await loadZones();
@@ -374,6 +435,7 @@ if (emergencyStopBtn) {
                 }
             }
             await database.ref('controls/pump').set(0);
+            window.showBobNotification("🚨 EMERGENCY STOP", "All irrigation halted and pump stopped!", "critical", 8000, true);
             window.addAlertToUI("emergency_stop", "🚨 EMERGENCY STOP - All irrigation halted and pump stopped", "critical", true);
             await saveActivityLog('EMERGENCY STOP ACTIVATED - Pump and all zones stopped', 'emergency');
             await loadZones();
@@ -394,7 +456,11 @@ window.addNewZone = async function() {
     const startDate = document.getElementById('zoneStartDate').value;
     const endDate = document.getElementById('zoneEndDate').value;
     
-    if (!name) { window.addAlertToUI('zone_name_error', '❌ Please enter a zone name', 'warning', true); return; }
+    if (!name) { 
+        window.addAlertToUI('zone_name_error', '❌ Please enter a zone name', 'warning', true);
+        window.showBobNotification("❌ Error", "Please enter a zone name", "warning", 3000, false);
+        return; 
+    }
     if (!validateDates(startDate, endDate)) return;
     
     const newZone = {
@@ -409,12 +475,15 @@ window.addNewZone = async function() {
     await loadZones();
     closeAddZoneModal();
     await saveActivityLog(`Created zone: ${name}`, 'zone_create');
+    window.showBobNotification("✅ Zone Created", `New zone "${name}" created successfully`, "success", 4000, false);
     window.addAlertToUI(`zone_create_${Date.now()}`, `✅ New zone "${name}" created successfully`, "success", false);
     
     document.getElementById('zoneName').value = '';
     document.getElementById('zoneDescription').value = '';
     document.getElementById('zoneStartDate').value = '';
     document.getElementById('zoneEndDate').value = '';
+    document.getElementById('zoneSoilTarget').value = 60;
+    document.getElementById('soilTargetValue').innerText = '60%';
 };
 
 window.editZone = async function(zoneId) {
@@ -456,6 +525,7 @@ window.saveZoneEdit = async function() {
     await loadZones();
     closeEditZoneModal();
     await saveActivityLog(`Updated zone: ${updates.name}`, 'zone_edit');
+    window.showBobNotification("✏️ Zone Updated", `Zone "${updates.name}" updated`, "success", 4000, false);
     window.addAlertToUI(`zone_edit_${Date.now()}`, `✏️ Zone "${updates.name}" updated`, "success", false);
 };
 
@@ -465,6 +535,7 @@ window.deleteZone = async function(zoneId) {
     await database.ref(`users_w/${currentUserId}/zones/${zoneId}`).remove();
     await loadZones();
     await saveActivityLog(`Deleted zone: ${zone.name}`, 'zone_delete');
+    window.showBobNotification("🗑️ Zone Deleted", `Zone "${zone.name}" deleted`, "info", 4000, false);
     window.addAlertToUI(`zone_delete_${Date.now()}`, `🗑️ Zone "${zone.name}" deleted`, "success", false);
 };
 
@@ -479,6 +550,7 @@ window.addNewSchedule = async function() {
     
     if (!name || !zoneId || !time || selectedDays.length === 0) {
         window.addAlertToUI('schedule_error', '❌ Please fill all fields and select at least one day', 'warning', true);
+        window.showBobNotification("❌ Error", "Please fill all fields and select at least one day", "warning", 3000, false);
         return;
     }
     
@@ -495,6 +567,7 @@ window.addNewSchedule = async function() {
     await loadZones();
     closeAddScheduleModal();
     await saveActivityLog(`Created schedule: ${name} for zone ${zone?.name}`, 'schedule_create');
+    window.showBobNotification("⏰ Schedule Created", `Schedule "${name}" created for zone "${zone?.name}"`, "success", 4000, false);
     window.addAlertToUI(`schedule_create_${Date.now()}`, `⏰ Schedule "${name}" created for zone "${zone?.name}"`, "success", false);
     
     document.getElementById('scheduleName').value = '';
@@ -515,15 +588,28 @@ window.editSchedule = async function(scheduleId) {
     const zoneSelect = document.getElementById('editScheduleZone');
     zoneSelect.innerHTML = '<option value="">Choose zone...</option>' + zones.map(z => `<option value="${z.id}" ${z.id === schedule.zoneId ? 'selected' : ''}>${z.icon || '🌱'} ${escapeHtml(z.name)}</option>`).join('');
     
-    document.querySelectorAll('#editScheduleModal .day-checkbox').forEach(cb => {
-        cb.checked = schedule.days?.includes(cb.value) || false;
+    // Reset all checkboxes first
+    const allCheckboxes = document.querySelectorAll('#editScheduleModal .day-checkbox');
+    allCheckboxes.forEach(cb => {
+        cb.checked = false;
         const selector = cb.closest('.day-selector');
-        if (selector) {
-            if (cb.checked) selector.classList.add('active');
-            else selector.classList.remove('active');
-        }
+        if (selector) selector.classList.remove('active');
     });
+    
+    // Set checked days from schedule data
+    if (schedule.days && Array.isArray(schedule.days)) {
+        allCheckboxes.forEach(cb => {
+            if (schedule.days.includes(cb.value)) {
+                cb.checked = true;
+                const selector = cb.closest('.day-selector');
+                if (selector) selector.classList.add('active');
+            }
+        });
+    }
+    
     document.getElementById('editScheduleModal').classList.remove('hidden');
+    // Setup day selectors for edit schedule modal
+    setTimeout(() => setupDaySelectors('editScheduleModal'), 100);
 };
 
 window.saveScheduleEdit = async function() {
@@ -535,6 +621,7 @@ window.saveScheduleEdit = async function() {
     
     if (!zoneId || selectedDays.length === 0) {
         window.addAlertToUI('schedule_edit_error', '❌ Please select a zone and at least one day', 'warning', true);
+        window.showBobNotification("❌ Error", "Please select a zone and at least one day", "warning", 3000, false);
         return;
     }
     
@@ -552,6 +639,7 @@ window.saveScheduleEdit = async function() {
     await loadZones();
     closeEditScheduleModal();
     await saveActivityLog(`Updated schedule: ${updates.name} for zone ${zone?.name}`, 'schedule_edit');
+    window.showBobNotification("✏️ Schedule Updated", `Schedule "${updates.name}" updated for zone "${zone?.name}"`, "success", 4000, false);
     window.addAlertToUI(`schedule_edit_${Date.now()}`, `✏️ Schedule "${updates.name}" updated for zone "${zone?.name}"`, "success", false);
 };
 
@@ -561,6 +649,7 @@ window.deleteSchedule = async function(scheduleId) {
     await database.ref(`users_w/${currentUserId}/schedules/${scheduleId}`).remove();
     await loadSchedules();
     await saveActivityLog(`Deleted schedule: ${schedule?.name}`, 'schedule_delete');
+    window.showBobNotification("🗑️ Schedule Deleted", `Schedule "${schedule?.name}" deleted`, "info", 4000, false);
     window.addAlertToUI(`schedule_delete_${Date.now()}`, `🗑️ Schedule "${schedule?.name}" deleted`, "success", false);
 };
 
@@ -582,16 +671,17 @@ if (pumpToggle) {
         await pumpRef.set(e.target.checked ? 1 : 0);
         const message = `Main pump turned ${e.target.checked ? 'ON' : 'OFF'}`;
         await saveActivityLog(message, 'pump');
-        window.addAlertToUI(`pump_${Date.now()}`, `🔌 ${message}`, e.target.checked ? "success" : "success", true);
+        // PUMP CONTROL - Bob appears, NO sound, ring alert NO sound
+        window.showBobNotification("🔌 Pump Control", message, e.target.checked ? "success" : "info", 4000, false);
+        window.addAlertToUI(`pump_${Date.now()}`, `🔌 ${message}`, e.target.checked ? "success" : "success", false);
     });
 }
 
-// ===================== SENSOR LISTENER - GET REAL SOIL FROM FIREBASE =====================
+// ===================== SENSOR LISTENER =====================
 database.ref('sensors').on('value', (snapshot) => {
     const d = snapshot.val();
     if (!d) return;
 
-    // Get REAL values from Firebase sensors path
     const temp  = parseFloat(d.temp ?? d.temperature ?? 0);
     const hum   = parseFloat(d.hum ?? d.humidity ?? 0);
     const soil  = parseFloat(d.soil ?? d.soilMoisture ?? 0);
@@ -599,22 +689,17 @@ database.ref('sensors').on('value', (snapshot) => {
 
     currentSensorData = { temp, hum, soil, water };
 
-    // Update ALL zone cards with REAL soil moisture from Firebase
     zones.forEach(zone => {
         const soilElement = document.getElementById(`soil-${zone.id}`);
         if (soilElement) {
-            // Show REAL soil moisture value
             soilElement.innerText = `${Math.round(soil)}%`;
-            
         }
     });
 
-    // Calculate water values for tank display
     const waterPercent = waterValueToPercent(water);
     const totalWaterLiters = waterValueToLiters(water);
     const waterHeightCm = (waterPercent / 100) * maxTankLevelCm;
 
-    // Update tank display if elements exist
     const tankFill = document.getElementById('tankLevelFill');
     if (tankFill) tankFill.style.width = `${waterPercent}%`;
     
@@ -629,10 +714,15 @@ database.ref('sensors').on('value', (snapshot) => {
     
     console.log(`🌱 REAL sensor data - Soil: ${soil}% | Temp: ${temp}°C | Humidity: ${hum}% | Water: ${waterPercent}%`);
 });
+
 // ===================== DOWNLOAD REPORT =====================
 window.downloadZoneReport = async function(zoneId) {
     const zone = zones.find(z => z.id === zoneId);
-    if (!zone) { window.addAlertToUI('zone_not_found', '❌ Zone not found', 'warning', true); return; }
+    if (!zone) { 
+        window.addAlertToUI('zone_not_found', '❌ Zone not found', 'warning', true);
+        window.showBobNotification("❌ Error", "Zone not found", "warning", 3000, false);
+        return; 
+    }
     try {
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF();
@@ -693,29 +783,40 @@ window.downloadZoneReport = async function(zoneId) {
         doc.save(safeFileName);
         
         await saveActivityLog(`Downloaded report for zone: ${zone.name}`, 'report');
-        window.addAlertToUI(`report_download_${Date.now()}`, `📄 Report for "${zone.name}" downloaded!`, "success", false);
-    } catch(e) { console.error("PDF Error:", e); window.addAlertToUI('pdf_error', '❌ Failed to generate report', 'warning', true); }
+        window.showBobNotification("📄 Report Downloaded", `Report for "${zone.name}" downloaded!`, "success", 3000, false);
+    } catch(e) { 
+        console.error("PDF Error:", e); 
+        window.addAlertToUI('pdf_error', '❌ Failed to generate report', 'warning', true);
+        window.showBobNotification("❌ PDF Failed", "Could not generate report", "warning", 3000, false);
+    }
 };
 
 // ===================== MODAL CONTROLS =====================
 window.showAddZoneModal = () => {
     document.getElementById('zoneStartDate').value = new Date().toISOString().split('T')[0];
     document.getElementById('addZoneModal').classList.remove('hidden');
+    setupSoilTargetSlider();
 };
 window.closeAddZoneModal = () => document.getElementById('addZoneModal').classList.add('hidden');
 window.showAddScheduleModal = () => {
     updateScheduleSelects();
     document.getElementById('scheduleStartDate').value = new Date().toISOString().split('T')[0];
     document.getElementById('addScheduleModal').classList.remove('hidden');
+    setTimeout(() => setupDaySelectors('addScheduleModal'), 100);
 };
 window.closeAddScheduleModal = () => document.getElementById('addScheduleModal').classList.add('hidden');
-window.closeEditZoneModal = () => document.getElementById('editZoneModal').classList.add('hidden');
-window.closeEditScheduleModal = () => document.getElementById('editScheduleModal').classList.add('hidden');
+window.closeEditZoneModal = () => {
+    document.getElementById('editZoneModal').classList.add('hidden');
+};
+window.closeEditScheduleModal = () => {
+    document.getElementById('editScheduleModal').classList.add('hidden');
+};
 window.clearLogs = async function() {
     if (confirm('Clear all activity logs?')) {
         await database.ref(`users_w/${currentUserId}/activityLog`).remove();
         await loadActivityLog();
         window.addAlertToUI('logs_cleared', '🗑️ Activity logs cleared', 'success', false);
+        window.showBobNotification("🗑️ Logs Cleared", "Activity logs cleared", "info", 3000, false);
     }
 };
 
@@ -733,5 +834,7 @@ async function init() {
     await loadSchedules();
     await loadActivityLog();
     startScheduleChecker();
+    setupSoilTargetSlider();
+    setupEditSoilTargetSlider();
 }
 init();
