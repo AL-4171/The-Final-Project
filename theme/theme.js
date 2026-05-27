@@ -8,6 +8,98 @@
 // NEW: Water level overflow alert (tank > 90%)
 // NEW: Water level critical high alert (tank = 100%)
 // FIXED: NO sound for pump on/off or zones on/off actions
+// NEW: User-configurable thresholds from Settings page
+// NEW: Notification preferences from Settings page (push notifications)
+
+// ===================== LANDING PAGE CHECK =====================
+function shouldEnableAlerts() {
+    try {
+        const user = localStorage.getItem("hydroUser");
+        const isLoggedIn = !!(user && user !== "null" && user !== "undefined");
+        const currentPath = window.location.pathname.toLowerCase();
+        
+        if (currentPath.includes('landing') || currentPath.includes('login') || currentPath.includes('signup')) {
+            return false;
+        }
+        
+        if (!isLoggedIn) {
+            return false;
+        }
+        
+        return true;
+    } catch(e) {
+        return false;
+    }
+}
+
+// ===================== NOTIFICATION PREFERENCES FROM SETTINGS =====================
+let notificationPrefs = {
+    email: true,
+    push: true
+};
+
+function loadNotificationPrefs() {
+    try {
+        const saved = localStorage.getItem('hydroGenNotifs');
+        if (saved) {
+            const prefs = JSON.parse(saved);
+            notificationPrefs.email = prefs.email !== undefined ? prefs.email : true;
+            notificationPrefs.push = prefs.push !== undefined ? prefs.push : true;
+            console.log("📋 Notification preferences loaded:", notificationPrefs);
+        }
+    } catch(e) {}
+}
+
+// ===================== THRESHOLDS FROM FIREBASE SETTINGS =====================
+let userThresholds = { lowWater: 10, drySoil: 20 };
+
+async function loadUserThresholds() {
+    if (window.hydroGenDB) {
+        try {
+            const snapshot = await window.hydroGenDB.ref('settings/thresholds').once('value');
+            const data = snapshot.val();
+            if (data) {
+                if (data.lowWater !== undefined && data.lowWater >= 0 && data.lowWater <= 100) {
+                    userThresholds.lowWater = data.lowWater;
+                }
+                if (data.drySoil !== undefined && data.drySoil >= 0 && data.drySoil <= 100) {
+                    userThresholds.drySoil = data.drySoil;
+                }
+                console.log(`✅ Thresholds loaded: Water < ${userThresholds.lowWater}%, Soil < ${userThresholds.drySoil}%`);
+            }
+        } catch(e) {}
+    }
+}
+
+function startThresholdListener() {
+    if (!window.hydroGenDB) {
+        setTimeout(startThresholdListener, 1000);
+        return;
+    }
+    window.hydroGenDB.ref('settings/thresholds').on('value', (snapshot) => {
+        if (!shouldEnableAlerts()) return;
+        const data = snapshot.val();
+        if (data) {
+            let changed = false;
+            if (data.lowWater !== undefined && data.lowWater >= 0 && data.lowWater <= 100 && userThresholds.lowWater !== data.lowWater) {
+                userThresholds.lowWater = data.lowWater;
+                changed = true;
+            }
+            if (data.drySoil !== undefined && data.drySoil >= 0 && data.drySoil <= 100 && userThresholds.drySoil !== data.drySoil) {
+                userThresholds.drySoil = data.drySoil;
+                changed = true;
+            }
+            if (changed) {
+                console.log(`🔄 Thresholds updated: Water < ${userThresholds.lowWater}%, Soil < ${userThresholds.drySoil}%`);
+                if (window.lastSensorData) {
+                    checkSensorAlerts(window.lastSensorData);
+                }
+            }
+        }
+    });
+}
+
+window.lastSensorData = null;
 
 // ===================== ALERT & BOB LOGIC =====================
 let bobQueue = [];
@@ -25,7 +117,7 @@ let activeAlertConditions = {
 
 // Track which Bobs have been shown recently to prevent duplicates
 const recentBobsShown = new Map(); // messageKey -> timestamp
-const BOB_DEDUPE_DELAY = 20000; // 20 seconds minimum between same Bob type (increased)
+const BOB_DEDUPE_DELAY = 20000; // 20 seconds minimum between same Bob type
 
 // Track active Bob ID to prevent any duplicates
 let currentActiveBobId = null;
@@ -40,11 +132,9 @@ let soundPlaying = false;
 let soundTimer = null;
 let currentAudioContext = null;
 
-// Each play gets its own short-lived AudioContext so close() = instant silence.
 let activeSoundContext = null;
 let activeSoundNodes = null;
 
-// Warms up browser audio engine on first user gesture
 let audioUnlocked = false;
 
 function unlockAudio() {
@@ -61,7 +151,6 @@ document.addEventListener('click', unlockAudio, { passive: true });
 document.addEventListener('touchstart', unlockAudio, { passive: true });
 document.addEventListener('keydown', unlockAudio, { passive: true });
 
-// Stop any playing sound immediately
 function stopAlertSound() {
     console.log("🔇 Stopping alert sound...");
     
@@ -105,16 +194,16 @@ function stopAlertSound() {
     currentBobSoundPlaying = false;
 }
 
-// Play sound for a Bob (unique sound per Bob)
 function playBobSound() {
-    // Don't play if a sound is already playing for current Bob
+    if (!shouldEnableAlerts()) return;
+    
     if (currentBobSoundPlaying) {
         console.log("🔊 Sound already playing for current Bob, skipping");
         return;
     }
     
     console.log("🔊 Playing Bob alert sound");
-    stopAlertSound(); // Kill any previous sound first
+    stopAlertSound();
     
     currentBobSoundPlaying = true;
     
@@ -147,7 +236,6 @@ function playBobSound() {
                 
                 activeSoundNodes = { oscillator: alarm, modulator: modulator, gain: gain };
                 
-                // Auto-stop after 2 seconds (natural end of Bob sound)
                 soundTimer = setTimeout(() => {
                     stopAlertSound();
                 }, 2000);
@@ -197,35 +285,29 @@ function playFallbackBeep() {
 
 // ===================== BOB NOTIFICATION SYSTEM =====================
 
-// Check if a Bob was shown too recently (prevents duplicates)
 function isDuplicateBob(type, message) {
     const now = Date.now();
     
-    // Check cooldown between Bobs
     if (now - lastBobEndTime < BOB_COOLDOWN) {
-        console.log(`⚠️ Duplicate Bob prevented: Cooldown active (${now - lastBobEndTime}ms since last Bob ended)`);
+        console.log(`⚠️ Duplicate Bob prevented: Cooldown active`);
         return true;
     }
     
-    // Check if same type with similar message was shown recently
     const key = `${type}_${message.substring(0, 50)}`;
     const lastShown = recentBobsShown.get(key);
     
     if (lastShown && (now - lastShown) < BOB_DEDUPE_DELAY) {
-        console.log(`⚠️ Duplicate Bob prevented: ${type} - "${message.substring(0, 40)}..." (${now - lastShown}ms ago)`);
+        console.log(`⚠️ Duplicate Bob prevented: ${type}`);
         return true;
     }
     
-    // Check if there's an active Bob with same type
     if (currentActiveBobId && currentActiveBobId.includes(type)) {
         console.log(`⚠️ Duplicate Bob prevented: Another ${type} Bob is still active`);
         return true;
     }
     
-    // Store this Bob as shown
     recentBobsShown.set(key, now);
     
-    // Clean old entries (older than 1 minute)
     for (const [k, t] of recentBobsShown.entries()) {
         if (now - t > 60000) {
             recentBobsShown.delete(k);
@@ -236,13 +318,15 @@ function isDuplicateBob(type, message) {
 }
 
 function processBobQueue() {
-    // Prevent processing if a Bob is showing or queue is empty
+    if (!shouldEnableAlerts()) {
+        bobQueue = [];
+        return;
+    }
+    
     if (isBobShowing || bobQueue.length === 0) return;
     
-    // Check cooldown
     const now = Date.now();
     if (now - lastBobEndTime < BOB_COOLDOWN) {
-        console.log(`⏳ Bob cooldown active, delaying next Bob...`);
         setTimeout(processBobQueue, BOB_COOLDOWN - (now - lastBobEndTime));
         return;
     }
@@ -251,12 +335,10 @@ function processBobQueue() {
     const { title, message, type, duration, bobId, playSound } = bobQueue.shift();
     currentActiveBobId = bobId;
 
-    // Play sound ONLY when Bob appears (if requested)
     if (playSound) {
         playBobSound();
     }
 
-    // Remove any existing Bob to prevent stacking
     const existingBob = document.getElementById("bobNotification");
     if (existingBob) existingBob.remove();
 
@@ -284,7 +366,6 @@ function processBobQueue() {
     `;
     document.body.appendChild(bob);
 
-    // Auto-close after duration
     const timeoutId = setTimeout(() => {
         const currentBob = document.getElementById("bobNotification");
         if (currentBob && currentBob.getAttribute("data-bob-id") === bobId) {
@@ -293,7 +374,6 @@ function processBobQueue() {
             isBobShowing = false;
             currentActiveBobId = null;
             lastBobEndTime = Date.now();
-            // Stop sound when Bob expires
             stopAlertSound();
             processBobQueue();
         }
@@ -321,7 +401,6 @@ window.closeCurrentBob = function(bobId) {
         isBobShowing = false;
         currentActiveBobId = null;
         lastBobEndTime = Date.now();
-        // Stop the sound immediately when user closes
         console.log("❌ Bob closed by user - stopping sound");
         stopAlertSound();
         processBobQueue();
@@ -329,7 +408,8 @@ window.closeCurrentBob = function(bobId) {
 };
 
 function showBobNotification(title, message, type, duration = 8000, playSound = true) {
-    // Prevent duplicate Bobs
+    if (!shouldEnableAlerts()) return;
+    
     if (isDuplicateBob(type, message)) {
         return;
     }
@@ -341,18 +421,17 @@ function showBobNotification(title, message, type, duration = 8000, playSound = 
 
 // ===================== ALERTS UI =====================
 
-// Track alerts to prevent duplicates
 const addedAlerts = new Map();
 
 function addAlertToUI(alertId, message, type, playSound = false) {
+    if (!shouldEnableAlerts()) return;
+    
     const alertsBox = document.getElementById("alertsContainer");
     if (!alertsBox) return;
     
-    // Check for duplicate alert in UI
     const existingAlert = document.getElementById(`alert-${alertId}`);
     if (existingAlert) return;
     
-    // Check for duplicate within 10 seconds
     const alertKey = `${alertId}_${type}`;
     const lastAdded = addedAlerts.get(alertKey);
     if (lastAdded && (Date.now() - lastAdded) < 10000) {
@@ -385,20 +464,24 @@ function addAlertToUI(alertId, message, type, playSound = false) {
 
     alertsBox.insertBefore(alertDiv, alertsBox.firstChild);
 
-    // Play sound if requested
     if (playSound) {
         playBobSound();
     }
 
-    // Show Bob notification for critical, warning, and overflow alerts
     if (type === 'critical') {
-        showBobNotification("🚨 Critical Alert", message, "critical", 15000, true);
-        const bell = document.getElementById("notifToggle");
-        if (bell) bell.classList.add("ringing");
+        if (notificationPrefs.push) {
+            showBobNotification("🚨 Critical Alert", message, "critical", 15000, true);
+            const bell = document.getElementById("notifToggle");
+            if (bell) bell.classList.add("ringing");
+        }
     } else if (type === 'warning') {
-        showBobNotification("⚠️ Warning", message, "warning", 10000, true);
+        if (notificationPrefs.push) {
+            showBobNotification("⚠️ Warning", message, "warning", 10000, true);
+        }
     } else if (type === 'overflow') {
-        showBobNotification("💧 Overflow Alert", message, "warning", 10000, true);
+        if (notificationPrefs.push) {
+            showBobNotification("💧 Overflow Alert", message, "warning", 10000, true);
+        }
     }
 
     updateBadge();
@@ -447,22 +530,18 @@ function updateBadge() {
     }
 }
 
-// Water value conversion for tank (0-12 sensor value)
-// Note: water sensor: 0 = full, 12 = empty
 function waterValueToPercent(waterValue) {
     if (waterValue === undefined || waterValue === null) return 0;
     const clamped = Math.min(12, Math.max(0, waterValue));
-    // Convert: 12 (empty) = 0%, 0 (full) = 100%
     return Math.round(((12 - clamped) / 12) * 100);
 }
 
-// Get raw water value from sensor
 function getRawWaterValue(waterValue) {
     if (waterValue === undefined || waterValue === null) return 12;
     return Math.min(12, Math.max(0, waterValue));
 }
 
-// ===================== CRITICAL ALERT INTERVAL (EVERY 5 MINUTES) =====================
+// ===================== CRITICAL ALERT INTERVAL =====================
 let criticalAlertInterval = null;
 let lastCriticalAlertTime = 0;
 
@@ -470,6 +549,8 @@ function startCriticalAlertChecker() {
     if (criticalAlertInterval) clearInterval(criticalAlertInterval);
 
     criticalAlertInterval = setInterval(() => {
+        if (!shouldEnableAlerts()) return;
+        
         const hasActiveCritical =
             activeAlertConditions.soil_critical ||
             activeAlertConditions.temp_critical ||
@@ -479,7 +560,6 @@ function startCriticalAlertChecker() {
 
         if (hasActiveCritical) {
             const now = Date.now();
-            // Prevent duplicate critical alerts within 4.5 minutes (safety margin)
             if (now - lastCriticalAlertTime < 270000) {
                 console.log("⏭️ Skipping 5-minute critical alert - too soon since last");
                 return;
@@ -488,20 +568,29 @@ function startCriticalAlertChecker() {
             
             console.log("🔊 5-minute critical alert - playing sound and showing Bob");
             
-            // Determine which critical condition is active (priority order)
             if (activeAlertConditions.water_overflow_critical) {
-                showBobNotification("🚨 CRITICAL ALERT", "Water tank is OVERFLOWING! Emergency shutdown!", "critical", 8000, true);
+                if (notificationPrefs.push) {
+                    showBobNotification("🚨 CRITICAL ALERT", "Water tank is OVERFLOWING! Emergency shutdown!", "critical", 8000, true);
+                }
             } else if (activeAlertConditions.soil_critical) {
-                showBobNotification("🚨 CRITICAL ALERT", "Soil is extremely dry! Water immediately!", "critical", 8000, true);
+                if (notificationPrefs.push) {
+                    showBobNotification("🚨 CRITICAL ALERT", `Soil is extremely dry (below ${userThresholds.drySoil}%)! Water immediately!`, "critical", 8000, true);
+                }
             } else if (activeAlertConditions.temp_critical) {
-                showBobNotification("🚨 CRITICAL ALERT", "Extreme temperature! Provide shade!", "critical", 8000, true);
+                if (notificationPrefs.push) {
+                    showBobNotification("🚨 CRITICAL ALERT", "Extreme temperature! Provide shade!", "critical", 8000, true);
+                }
             } else if (activeAlertConditions.water_critical) {
-                showBobNotification("🚨 CRITICAL ALERT", "Water tank is empty! Activate collection!", "critical", 8000, true);
+                if (notificationPrefs.push) {
+                    showBobNotification("🚨 CRITICAL ALERT", `Water tank is empty (below ${userThresholds.lowWater}%)! Activate collection!`, "critical", 8000, true);
+                }
             } else if (activeAlertConditions.hum_critical) {
-                showBobNotification("🚨 CRITICAL ALERT", "Very low humidity! Poor water collection!", "critical", 8000, true);
+                if (notificationPrefs.push) {
+                    showBobNotification("🚨 CRITICAL ALERT", "Very low humidity! Poor water collection!", "critical", 8000, true);
+                }
             }
         }
-    }, 300000); // 5 minutes
+    }, 300000);
 }
 
 // ===================== UNIVERSAL SENSOR LISTENER =====================
@@ -512,17 +601,23 @@ function startUniversalSensorListener() {
     }
 
     console.log("🔥 Starting universal sensor listener");
+    
+    loadNotificationPrefs();
+    loadUserThresholds();
+    startThresholdListener();
 
     window.hydroGenDB.ref('sensors').on('value', (snapshot) => {
+        if (!shouldEnableAlerts()) return;
+        
         const data = snapshot.val();
         if (data) {
+            window.lastSensorData = data;
             console.log("📊 Real sensor data from Firebase:", data);
             checkSensorAlerts(data);
         }
     });
 }
 
-// Throttle alert checks to prevent rapid fire
 let lastAlertCheckTime = 0;
 let pendingAlertCheck = false;
 
@@ -549,114 +644,126 @@ function checkSensorAlerts(sensorData) {
         activeAlertConditions.hum_critical ||
         activeAlertConditions.water_overflow_critical;
 
-    // Get REAL values from Firebase
     const soil = Number(sensorData.soil) || 0;
     const temp = Number(sensorData.temp) || 0;
     const hum = Number(sensorData.hum) || 0;
     const rawWater = Number(sensorData.water) !== undefined ? Number(sensorData.water) : 12;
     const waterPercent = waterValueToPercent(rawWater);
     
-    // For overflow detection, we need the raw sensor value
-    // Raw water sensor: 0 = FULL (tank full), 12 = EMPTY
-    const isTankFull = rawWater <= 0.5; // Sensor reading 0-0.5 means tank is completely full
-    const isTankNearFull = rawWater <= 1.5; // Sensor reading 1.5 or less means near full
+    const isTankFull = rawWater <= 0.5;
+    const isTankNearFull = rawWater <= 1.5;
 
     console.log(`Soil: ${soil}%, Temp: ${temp}°C, Humidity: ${hum}%, Tank: ${waterPercent}%, RawWater: ${rawWater}, isFull: ${isTankFull}`);
 
-    // ===================== WATER LEVEL OVERFLOW ALERTS (NEW) =====================
-    // CRITICAL OVERFLOW - Tank is completely full (sensor reading 0)
+    // WATER LEVEL OVERFLOW ALERTS
     if (isTankFull && !activeAlertConditions.water_overflow_critical) {
         activeAlertConditions.water_overflow_critical = true;
-        addAlertToUI("water_overflow_critical", `🚨💦 CRITICAL: Water tank is OVERFLOWING! Emergency stop recommended!`, "critical", true);
+        if (notificationPrefs.push) {
+            addAlertToUI("water_overflow_critical", `🚨💦 CRITICAL: Water tank is OVERFLOWING! Emergency stop recommended!`, "critical", true);
+        }
         console.log("💦💦 WATER OVERFLOW CRITICAL ALERT TRIGGERED! 💦💦");
     } 
-    // Warning overflow - Tank is near full (sensor reading <= 1.5)
     else if (isTankNearFull && !activeAlertConditions.water_overflow_warning && !activeAlertConditions.water_overflow_critical) {
         activeAlertConditions.water_overflow_warning = true;
-        addAlertToUI("water_overflow_warning", `⚠️💧 Warning: Water tank is nearly full (${waterPercent}%)! Consider pausing collection.`, "warning", true);
+        if (notificationPrefs.push) {
+            addAlertToUI("water_overflow_warning", `⚠️💧 Warning: Water tank is nearly full (${waterPercent}%)! Consider pausing collection.`, "warning", true);
+        }
         console.log("💦 Water near full warning");
     }
-    // Reset overflow alerts when tank level drops below 85% (rawWater > 2.5)
     else if (!isTankNearFull && rawWater > 2.5 && (activeAlertConditions.water_overflow_warning || activeAlertConditions.water_overflow_critical)) {
         if (activeAlertConditions.water_overflow_critical) {
             activeAlertConditions.water_overflow_critical = false;
             removeResolvedAlert("water_overflow_critical");
             addAlertToUI(`water_overflow_reset_${Date.now()}`, `✅ Water level normalized - overflow risk cleared`, "success", false);
-            console.log("✅ Water overflow critical cleared");
         }
         if (activeAlertConditions.water_overflow_warning) {
             activeAlertConditions.water_overflow_warning = false;
             removeResolvedAlert("water_overflow_warning");
             addAlertToUI(`water_overflow_warning_reset_${Date.now()}`, `✅ Water level normalized`, "success", false);
-            console.log("✅ Water overflow warning cleared");
         }
     }
 
-    // Soil alerts
-    if (soil < 20 && !activeAlertConditions.soil_critical) {
+    // SOIL ALERTS
+    if (soil < userThresholds.drySoil && !activeAlertConditions.soil_critical) {
         activeAlertConditions.soil_critical = true;
-        addAlertToUI("soil_critical", `🚨 CRITICAL: Soil extremely dry (${soil}%)! Water immediately!`, "critical", true);
+        if (notificationPrefs.push) {
+            addAlertToUI("soil_critical", `🚨 CRITICAL: Soil extremely dry (${soil}% < ${userThresholds.drySoil}%)! Water immediately!`, "critical", true);
+        }
     } else if (soil >= 25 && activeAlertConditions.soil_critical) {
         activeAlertConditions.soil_critical = false;
         removeResolvedAlert("soil_critical");
         addAlertToUI(`soil_recovered_${Date.now()}`, `✅ Soil moisture recovered to ${soil}%`, "success", false);
     } else if (soil >= 20 && soil < 30 && !activeAlertConditions.soil_warning && !activeAlertConditions.soil_critical) {
         activeAlertConditions.soil_warning = true;
-        addAlertToUI("soil_warning", `⚠️ Low soil moisture (${soil}%) — Water soon`, "warning", true);
+        if (notificationPrefs.push) {
+            addAlertToUI("soil_warning", `⚠️ Low soil moisture (${soil}%) — Water soon`, "warning", true);
+        }
     } else if (soil >= 30 && activeAlertConditions.soil_warning) {
         activeAlertConditions.soil_warning = false;
         removeResolvedAlert("soil_warning");
     }
 
-    // Temperature alerts
+    // TEMPERATURE ALERTS
     if (temp > 42 && !activeAlertConditions.temp_critical) {
         activeAlertConditions.temp_critical = true;
-        addAlertToUI("temp_critical", `🔥 CRITICAL: Extreme temperature (${temp}°C)! Provide shade!`, "critical", true);
+        if (notificationPrefs.push) {
+            addAlertToUI("temp_critical", `🔥 CRITICAL: Extreme temperature (${temp}°C)! Provide shade!`, "critical", true);
+        }
     } else if (temp <= 40 && activeAlertConditions.temp_critical) {
         activeAlertConditions.temp_critical = false;
         removeResolvedAlert("temp_critical");
         addAlertToUI(`temp_recovered_${Date.now()}`, `✅ Temperature normalized to ${temp}°C`, "success", false);
     } else if (temp > 38 && temp <= 42 && !activeAlertConditions.temp_warning && !activeAlertConditions.temp_critical) {
         activeAlertConditions.temp_warning = true;
-        addAlertToUI("temp_warning", `⚠️ High temperature (${temp}°C) — Monitor plants`, "warning", true);
+        if (notificationPrefs.push) {
+            addAlertToUI("temp_warning", `⚠️ High temperature (${temp}°C) — Monitor plants`, "warning", true);
+        }
     } else if (temp <= 38 && activeAlertConditions.temp_warning) {
         activeAlertConditions.temp_warning = false;
         removeResolvedAlert("temp_warning");
     }
 
-    // Water tank LOW alerts (empty tank)
-    if (waterPercent < 10 && !activeAlertConditions.water_critical && !activeAlertConditions.water_overflow_critical) {
+    // WATER TANK LOW ALERTS
+    if (waterPercent < userThresholds.lowWater && !activeAlertConditions.water_critical && !activeAlertConditions.water_overflow_critical) {
         activeAlertConditions.water_critical = true;
-        addAlertToUI("water_critical", `💧 CRITICAL: Water tank empty (${Math.round(waterPercent)}%)! Activate collection!`, "critical", true);
+        if (notificationPrefs.push) {
+            addAlertToUI("water_critical", `💧 CRITICAL: Water tank empty (${Math.round(waterPercent)}% < ${userThresholds.lowWater}%)! Activate collection!`, "critical", true);
+        }
     } else if (waterPercent >= 20 && activeAlertConditions.water_critical) {
         activeAlertConditions.water_critical = false;
         removeResolvedAlert("water_critical");
         addAlertToUI(`water_recovered_${Date.now()}`, `✅ Water tank level recovered to ${Math.round(waterPercent)}%`, "success", false);
     } else if (waterPercent >= 10 && waterPercent < 25 && !activeAlertConditions.water_warning && !activeAlertConditions.water_critical && !activeAlertConditions.water_overflow_warning) {
         activeAlertConditions.water_warning = true;
-        addAlertToUI("water_warning", `⚠️ Water tank low (${Math.round(waterPercent)}%) — Refill soon`, "warning", true);
+        if (notificationPrefs.push) {
+            addAlertToUI("water_warning", `⚠️ Water tank low (${Math.round(waterPercent)}%) — Refill soon`, "warning", true);
+        }
     } else if (waterPercent >= 25 && activeAlertConditions.water_warning) {
         activeAlertConditions.water_warning = false;
         removeResolvedAlert("water_warning");
     }
 
-    // Humidity alerts
+    // HUMIDITY ALERTS
     if (hum < 20 && !activeAlertConditions.hum_critical) {
         activeAlertConditions.hum_critical = true;
-        addAlertToUI("hum_critical", `💨 CRITICAL: Very low humidity (${hum}%)! Poor water collection!`, "critical", true);
+        if (notificationPrefs.push) {
+            addAlertToUI("hum_critical", `💨 CRITICAL: Very low humidity (${hum}%)! Poor water collection!`, "critical", true);
+        }
     } else if (hum >= 25 && activeAlertConditions.hum_critical) {
         activeAlertConditions.hum_critical = false;
         removeResolvedAlert("hum_critical");
         addAlertToUI(`hum_recovered_${Date.now()}`, `✅ Humidity recovered to ${hum}%`, "success", false);
     } else if (hum >= 20 && hum < 30 && !activeAlertConditions.hum_warning && !activeAlertConditions.hum_critical) {
         activeAlertConditions.hum_warning = true;
-        addAlertToUI("hum_warning", `⚠️ Low humidity (${hum}%) — Collection slow`, "warning", true);
+        if (notificationPrefs.push) {
+            addAlertToUI("hum_warning", `⚠️ Low humidity (${hum}%) — Collection slow`, "warning", true);
+        }
     } else if (hum >= 30 && activeAlertConditions.hum_warning) {
         activeAlertConditions.hum_warning = false;
         removeResolvedAlert("hum_warning");
     }
 
-    // Rain alerts
+    // RAIN ALERTS (always shown - no preference control)
     const rainDetected = sensorData.rain !== undefined ? Number(sensorData.rain) === 0 : false;
     if (rainDetected && !activeAlertConditions.rain_warning) {
         activeAlertConditions.rain_warning = true;
@@ -687,9 +794,10 @@ function checkSensorAlerts(sensorData) {
 }
 
 // Start the universal listener
-startUniversalSensorListener();
+if (shouldEnableAlerts()) {
+    startUniversalSensorListener();
+}
 
-// Stop ringing when notifications are clicked
 document.addEventListener('click', (e) => {
     if (e.target.closest('#notifToggle')) {
         document.getElementById("notifToggle")?.classList.remove("ringing");
@@ -768,6 +876,8 @@ let reloadSoundPlayed = false;
 let reloadAttemptCount = 0;
 
 async function checkAndPlayAlertOnReload() {
+    if (!shouldEnableAlerts()) return;
+    
     if (!window.hydroGenDB) {
         if (reloadAttemptCount < 10) {
             reloadAttemptCount++;
@@ -777,6 +887,9 @@ async function checkAndPlayAlertOnReload() {
     }
 
     try {
+        loadNotificationPrefs();
+        await loadUserThresholds();
+        
         const snapshot = await window.hydroGenDB.ref('sensors').once('value');
         const data = snapshot.val();
 
@@ -789,36 +902,34 @@ async function checkAndPlayAlertOnReload() {
             const isTankFull = rawWater <= 0.5;
 
             const hasCriticalCondition = (
-                soil < 20 ||
+                soil < userThresholds.drySoil ||
                 temp > 42 ||
-                waterPercent < 10 ||
+                waterPercent < userThresholds.lowWater ||
                 hum < 20 ||
                 isTankFull
             );
 
-            if (hasCriticalCondition) {
+            if (hasCriticalCondition && notificationPrefs.push) {
                 reloadSoundPlayed = true;
                 reloadBobShown = true;
                 
                 console.log("🔊 Page reload detected - critical condition found!");
                 
-                // Play sound after a short delay (ensures DOM is ready)
                 setTimeout(() => {
                     console.log("🔊 Playing alert sound on page reload");
                     playBobSound();
                     
-                    // Show the most urgent Bob
                     if (isTankFull) {
                         showBobNotification("🚨 CRITICAL ALERT", "Water tank is OVERFLOWING! Emergency shutdown!", "critical", 8000, true);
                         if (!activeAlertConditions.water_overflow_critical) {
                             activeAlertConditions.water_overflow_critical = true;
                             addAlertToUI("water_overflow_critical", `🚨💦 CRITICAL: Water tank is OVERFLOWING! Emergency stop recommended!`, "critical", false);
                         }
-                    } else if (soil < 20) {
-                        showBobNotification("🚨 CRITICAL ALERT", `Soil is extremely dry (${soil}%)! Water immediately!`, "critical", 8000, true);
+                    } else if (soil < userThresholds.drySoil) {
+                        showBobNotification("🚨 CRITICAL ALERT", `Soil is extremely dry (${soil}% < ${userThresholds.drySoil}%)! Water immediately!`, "critical", 8000, true);
                         if (!activeAlertConditions.soil_critical) {
                             activeAlertConditions.soil_critical = true;
-                            addAlertToUI("soil_critical", `🚨 CRITICAL: Soil extremely dry (${soil}%)! Water immediately!`, "critical", false);
+                            addAlertToUI("soil_critical", `🚨 CRITICAL: Soil extremely dry (${soil}% < ${userThresholds.drySoil}%)! Water immediately!`, "critical", false);
                         }
                     } else if (temp > 42) {
                         showBobNotification("🚨 CRITICAL ALERT", `Extreme temperature (${temp}°C)! Provide shade!`, "critical", 8000, true);
@@ -826,11 +937,11 @@ async function checkAndPlayAlertOnReload() {
                             activeAlertConditions.temp_critical = true;
                             addAlertToUI("temp_critical", `🔥 CRITICAL: Extreme temperature (${temp}°C)! Provide shade!`, "critical", false);
                         }
-                    } else if (waterPercent < 10) {
-                        showBobNotification("🚨 CRITICAL ALERT", `Water tank is empty (${Math.round(waterPercent)}%)! Activate collection!`, "critical", 8000, true);
+                    } else if (waterPercent < userThresholds.lowWater) {
+                        showBobNotification("🚨 CRITICAL ALERT", `Water tank is empty (${Math.round(waterPercent)}% < ${userThresholds.lowWater}%)! Activate collection!`, "critical", 8000, true);
                         if (!activeAlertConditions.water_critical) {
                             activeAlertConditions.water_critical = true;
-                            addAlertToUI("water_critical", `💧 CRITICAL: Water tank empty (${Math.round(waterPercent)}%)! Activate collection!`, "critical", false);
+                            addAlertToUI("water_critical", `💧 CRITICAL: Water tank empty (${Math.round(waterPercent)}% < ${userThresholds.lowWater}%)! Activate collection!`, "critical", false);
                         }
                     } else if (hum < 20) {
                         showBobNotification("🚨 CRITICAL ALERT", `Very low humidity (${hum}%)! Poor water collection!`, "critical", 8000, true);
@@ -843,7 +954,6 @@ async function checkAndPlayAlertOnReload() {
                     startCriticalAlertChecker();
                 }, 1000);
                 
-                // Reset reload flag after 10 seconds to allow new Bobs
                 setTimeout(() => { 
                     reloadBobShown = false; 
                     console.log("🔓 Reload Bob flag reset");
@@ -855,19 +965,19 @@ async function checkAndPlayAlertOnReload() {
     }
 }
 
-// Initialize on page load with multiple attempts
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
+if (shouldEnableAlerts()) {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            setTimeout(checkAndPlayAlertOnReload, 1000);
+            setTimeout(checkAndPlayAlertOnReload, 3000);
+            setTimeout(checkAndPlayAlertOnReload, 5000);
+        });
+    } else {
         setTimeout(checkAndPlayAlertOnReload, 1000);
         setTimeout(checkAndPlayAlertOnReload, 3000);
         setTimeout(checkAndPlayAlertOnReload, 5000);
-    });
-} else {
-    setTimeout(checkAndPlayAlertOnReload, 1000);
-    setTimeout(checkAndPlayAlertOnReload, 3000);
-    setTimeout(checkAndPlayAlertOnReload, 5000);
+    }
 }
-
 // ================= ORIGINAL THEME.JS CODE BELOW (UNCHANGED) =================
 
 function initTheme() {
