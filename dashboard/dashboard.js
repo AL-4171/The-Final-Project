@@ -37,21 +37,36 @@ let lastPumpState = false;
 let chart = null;
 let skycons = null;
 let rainAlertShown = false;
-
 // ===================== TANK CALCULATION =====================
+// Returns FLOOR value for tank fill bar (16%)
 function waterValueToPercent(waterValue) {
     if (waterValue === undefined || waterValue === null) return 0;
     const clamped = Math.min(12, Math.max(0, waterValue));
+    return Math.floor(((12 - clamped) / 12) * 100);
+}
+
+// Returns EXACT value with 2 decimals for toggle display (16.67%)
+function waterValueToPercentExact(waterValue) {
+    if (waterValue === undefined || waterValue === null) return 0;
+    const clamped = Math.min(12, Math.max(0, waterValue));
     const percent = ((12 - clamped) / 12) * 100;
-    return Math.round(percent);
+    return parseFloat(percent.toFixed(2));
 }
 
+// Returns EXACT liters with 2 decimals (0.33 L)
 function waterValueToLiters(waterValue) {
-    return (waterValueToPercent(waterValue) / 100) * maxCapacityLiters;
+    const clamped = Math.min(12, Math.max(0, waterValue));
+    const exactPercent = ((12 - clamped) / 12) * 100;
+    const liters = (exactPercent / 100) * maxCapacityLiters;
+    return parseFloat(liters.toFixed(2));
 }
 
+// Returns EXACT cm with 2 decimals (5.00 cm)
 function getWaterHeightCm(waterValue) {
-    return (waterValueToPercent(waterValue) / 100) * maxTankLevelCm;
+    const clamped = Math.min(12, Math.max(0, waterValue));
+    const exactPercent = ((12 - clamped) / 12) * 100;
+    const cm = (exactPercent / 100) * maxTankLevelCm;
+    return parseFloat(cm.toFixed(2));
 }
 
 // ================= AI CONTROL =================
@@ -397,21 +412,32 @@ db.ref("sensors").on("value", async (snap) => {
     if (envHum) envHum.innerText = d.hum + " %";
     if (envSoil) envSoil.innerText = d.soil + " %";
     
-    const waterPercent = waterValueToPercent(d.water);
-    const volume = waterValueToLiters(d.water);
-    const waterHeightCm = getWaterHeightCm(d.water);
+    const waterPercent = waterValueToPercent(d.water);           // FLOOR for bar (16)
+    const waterPercentExact = waterValueToPercentExact(d.water); // EXACT for toggle (16.67)
+    const volume = waterValueToLiters(d.water);                  // EXACT for liters (0.33)
+    const waterHeightCm = getWaterHeightCm(d.water);             // EXACT for cm (5.00)
     
+    // Tank fill bar (uses FLOOR)
     if (tankFill) tankFill.style.height = waterPercent + "%";
     const tankProgressFill = document.getElementById("tankProgressFill");
     if (tankProgressFill) tankProgressFill.style.width = waterPercent + "%";
+    
+    // Toggle percent display (uses EXACT with 2 decimals - shows 16.67%)
     const tankPercentText = document.getElementById("tankPercentText");
-    if (tankPercentText) tankPercentText.innerHTML = Math.round(waterPercent) + "%";
+    if (tankPercentText) tankPercentText.innerHTML = waterPercentExact + "%";
+    
+    // Liters display (EXACT with 2 decimals - shows 0.33 L)
     const tankLitersText = document.getElementById("tankLitersText");
     if (tankLitersText) tankLitersText.innerHTML = volume.toFixed(2) + " / 2.0 L";
-    if (tankPercent) tankPercent.innerText = Math.round(waterPercent) + "%";
-    if (tankLiters) tankLiters.innerText = volume.toFixed(2) + " L";
-    if (tankCmValue) tankCmValue.innerText = waterHeightCm.toFixed(1) + " cm";
     
+    // Percent inside tank (uses FLOOR - shows 16%)
+    if (tankPercent) tankPercent.innerText = waterPercent + "%";
+    
+    // Liters value (EXACT with 2 decimals - shows 0.33 L)
+    if (tankLiters) tankLiters.innerText = volume.toFixed(2) + " L";
+    
+    // CM height (EXACT with 2 decimals - shows 5.00 cm)
+    if (tankCmValue) tankCmValue.innerText = waterHeightCm.toFixed(2) + " cm";
     const tankCapacityText = document.getElementById("tankCapacityText");
     if (tankCapacityText) tankCapacityText.innerText = "2.0 Liters";
     const tankCapacityCm = document.getElementById("tankCapacityCm");

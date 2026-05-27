@@ -4,6 +4,7 @@
  *
  * v4.3 Fix: Comprehensive logging for AI engine selection
  *           Shows in console which engine is used for each response
+ *           Auto-updates welcome message when Firebase sensors change (even when chat is closed)
  */
 
 // ── Auto-load all knowledge modules ────────────────────────────────────────
@@ -165,6 +166,71 @@
     let _sensorCache    = null;
     let _lastSensorFetch = 0;
     let _liveListenerOn  = false;
+    let _cachedWelcomeMessage = null;
+    let _lastWelcomeData = null;
+
+    function isChatOpen() {
+        const chatWindow = document.getElementById('chatWindow');
+        return chatWindow && chatWindow.style.display === 'flex';
+    }
+
+    function updateWelcomeMessageDisplay() {
+        const chatBox = document.getElementById('chatBox');
+        if (!chatBox) return;
+        
+        const firstMsg = chatBox.querySelector('.msg.ai');
+        if (!firstMsg) return;
+        
+        if (_cachedWelcomeMessage) {
+            firstMsg.innerHTML = `<strong>🤖 HydroGen AI</strong><br>${formatMessageWithTables(_cachedWelcomeMessage)}`;
+            console.log('🔄 [Chatbot] Welcome message updated');
+        }
+    }
+
+    function updateWelcomeMessageCache() {
+        const d = getSensorData();
+        if (!d || d.temp === null) return;
+        
+        // Check if data changed significantly
+        if (_lastWelcomeData && 
+            _lastWelcomeData.tank === d.tank && 
+            _lastWelcomeData.soil === d.soil && 
+            _lastWelcomeData.temp === d.temp && 
+            _lastWelcomeData.hum === d.hum) {
+            return;
+        }
+        
+        _lastWelcomeData = { ...d };
+        
+        const page = detectPage();
+        const greet = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening';
+        
+        const pageContext = {
+            dashboard:  `I can see your live sensor data and help you decide when and how to irrigate.`,
+            irrigation: `I can help you manage your zones, schedules, pump, and watering strategy.`,
+            analytics:  `I can explain your charts, trends, and help you optimise irrigation efficiency.`,
+            reports:    `I can guide you through generating and interpreting your system reports.`,
+            settings:   `I can help you configure your system, troubleshoot issues, and set up AI mode.`,
+            home:       `I'm your intelligent irrigation assistant.`
+        };
+        
+        const statusTable = `| Metric | Value |\n|--------|-------|\n| 🌡️ Temperature | ${d.temp}°C |\n| 💧 Humidity | ${d.hum}% |\n| 🌱 Soil | ${d.soil}% |\n| 💦 Tank | ${d.tank}% |`;
+        
+        _cachedWelcomeMessage = `👋 ${greet}! I'm HydroGen AI.
+${pageContext[page] || pageContext.home}
+
+📊 **Live Status:**
+${statusTable}
+
+Ask me anything about your irrigation system!`;
+        
+        console.log('🔄 [Chatbot] Welcome message cache updated');
+        
+        // If chat is open, update it immediately
+        if (isChatOpen()) {
+            updateWelcomeMessageDisplay();
+        }
+    }
 
     function startLiveSensorListener() {
         if (_liveListenerOn || !window.hydroGenDB) return;
@@ -174,7 +240,7 @@
         window.hydroGenDB.ref('sensors').on('value', snap => {
             const sensorsData = snap.val() || {};
             let rawWater = sensorsData.water !== undefined ? parseFloat(sensorsData.water) : 12;
-            const tankPercent = Math.round(((12 - Math.min(12, Math.max(0, rawWater))) / 12) * 100);
+            const tankPercent = Math.floor(((12 - Math.min(12, Math.max(0, rawWater))) / 12) * 100);
             _sensorCache = {
                 temp:     sensorsData.temp  !== undefined ? parseFloat(sensorsData.temp)  : null,
                 hum:      sensorsData.hum   !== undefined ? parseFloat(sensorsData.hum)   : null,
@@ -185,6 +251,9 @@
             };
             _lastSensorFetch = Date.now();
             console.log('🌡️ [Chatbot] Live sensor update from Firebase:', _sensorCache);
+            
+            // Update welcome message cache
+            updateWelcomeMessageCache();
         });
 
         window.hydroGenDB.ref('controls/pump').on('value', snap => {
@@ -195,6 +264,9 @@
                 _sensorCache = { temp: null, hum: null, soil: null, tank: 0, pumpOn: pumpOn, rawWater: 12 };
             }
             console.log('🚰 [Chatbot] Pump status updated:', pumpOn ? 'ON' : 'OFF');
+            
+            // Update welcome message cache
+            updateWelcomeMessageCache();
         });
     }
 
@@ -214,8 +286,8 @@
                 const sensorsData = sensorsSnap.val() || {};
                 const pumpSnap    = await window.hydroGenDB.ref('controls/pump').once('value');
                 const pumpState   = pumpSnap.val() === 1;
-                let rawWater      = sensorsData.water !== undefined ? parseFloat(sensorsData.water) : 12;
-                const tankPercent = Math.round(((12 - Math.min(12, Math.max(0, rawWater))) / 12) * 100);
+                let rawWater = sensorsData.water !== undefined ? parseFloat(sensorsData.water) : 12;
+                const tankPercent = Math.floor(((12 - Math.min(12, Math.max(0, rawWater))) / 12) * 100);
                 _sensorCache = {
                     temp:     sensorsData.temp  !== undefined ? parseFloat(sensorsData.temp)  : null,
                     hum:      sensorsData.hum   !== undefined ? parseFloat(sensorsData.hum)   : null,
@@ -226,6 +298,9 @@
                 };
                 _lastSensorFetch = Date.now();
                 console.log('✅ [Chatbot] Fresh Firebase fetch complete:', _sensorCache);
+                
+                // Update welcome message cache
+                updateWelcomeMessageCache();
             } catch (e) {
                 console.warn('⚠️ [Chatbot] Sensor fetch error:', e);
             }
@@ -629,7 +704,7 @@ ${score < 85 ? '• Enable AI irrigation mode for automatic optimisation\n• Ch
 | 🌱 Soil | ${d.soil}% | ${d.soil >= 40 && d.soil <= 70 ? 'Positive (+10)' : d.soil < 30 ? 'Negative (-15)' : d.soil > 80 ? 'Negative (-10)' : 'Neutral'} |
 | 💦 Tank | ${d.tank}% | ${d.tank >= 30 ? 'Positive (+5)' : 'Negative (-10)'} |
 | 💧 Humidity | ${d.hum}% | ${d.hum > 60 ? 'Positive (+5)' : 'Negative (-5)'} |
-| 🌧️ Rain | ${rain ? 'Expected' : 'None'} | ${rain ? 'Negative (-5)' : 'Neutral'}`;
+| 🌧️ Rain | ${rain ? 'Expected' : 'None'} | ${rain ? 'Negative (-5)' : 'Neutral'}|`;
         }
 
         // ── Analytics Overview ──
@@ -1507,7 +1582,13 @@ I'm your built-in AI assistant — ask me anything! 🤖`;
     function toggleChat() {
         const w = document.getElementById('chatWindow');
         if (!w) return;
+        const wasClosed = w.style.display !== 'flex';
         w.style.display = w.style.display === 'flex' ? 'none' : 'flex';
+        
+        // If we just opened the chat, update the welcome message with latest cache
+        if (wasClosed && w.style.display === 'flex' && _cachedWelcomeMessage) {
+            updateWelcomeMessageDisplay();
+        }
     }
 
     function toggleChatExpand() {
@@ -1577,7 +1658,7 @@ I'm your built-in AI assistant — ask me anything! 🤖`;
             let bodyHtml = '<tbody>';
             for (let i = 1; i < dataLines.length; i++) {
                 const cells = parseRow(dataLines[i]);
-                bodyHtml += '<tr>';
+                bodyHtml += '</tr>';
                 cells.forEach(cell => {
                     bodyHtml += `<td style="padding:8px 12px;border:1px solid rgba(0,0,0,0.08);font-size:12px;vertical-align:top;word-break:break-word;line-height:1.5;">${escapeHtml(cell)}</td>`;
                 });

@@ -529,11 +529,18 @@ function updateBadge() {
         }
     }
 }
-
+// EXACT percent for alerts (returns 16.7, 8.3, 25.0)
+function waterValueToPercentExact(waterValue) {
+    if (waterValue === undefined || waterValue === null) return 0;
+    const clamped = Math.min(12, Math.max(0, waterValue));
+    const percent = ((12 - clamped) / 12) * 100;
+    return Math.round(percent * 10) / 10;
+}
+// FLOOR percent for tank display (returns 16, 8, 25)
 function waterValueToPercent(waterValue) {
     if (waterValue === undefined || waterValue === null) return 0;
     const clamped = Math.min(12, Math.max(0, waterValue));
-    return Math.round(((12 - clamped) / 12) * 100);
+    return Math.floor(((12 - clamped) / 12) * 100);
 }
 
 function getRawWaterValue(waterValue) {
@@ -648,7 +655,7 @@ function checkSensorAlerts(sensorData) {
     const temp = Number(sensorData.temp) || 0;
     const hum = Number(sensorData.hum) || 0;
     const rawWater = Number(sensorData.water) !== undefined ? Number(sensorData.water) : 12;
-    const waterPercent = waterValueToPercent(rawWater);
+    const waterPercent = waterValueToPercentExact(rawWater);
     
     const isTankFull = rawWater <= 0.5;
     const isTankNearFull = rawWater <= 1.5;
@@ -727,16 +734,16 @@ function checkSensorAlerts(sensorData) {
     if (waterPercent < userThresholds.lowWater && !activeAlertConditions.water_critical && !activeAlertConditions.water_overflow_critical) {
         activeAlertConditions.water_critical = true;
         if (notificationPrefs.push) {
-            addAlertToUI("water_critical", `💧 CRITICAL: Water tank empty (${Math.round(waterPercent)}% < ${userThresholds.lowWater}%)! Activate collection!`, "critical", true);
+            addAlertToUI("water_critical", `💧 CRITICAL: Water tank empty (${waterPercent.toFixed(1)}% < ${userThresholds.lowWater}%)! Activate collection!`, "critical", true);
         }
     } else if (waterPercent >= 20 && activeAlertConditions.water_critical) {
         activeAlertConditions.water_critical = false;
         removeResolvedAlert("water_critical");
-        addAlertToUI(`water_recovered_${Date.now()}`, `✅ Water tank level recovered to ${Math.round(waterPercent)}%`, "success", false);
+        addAlertToUI(`water_recovered_${Date.now()}`, `✅ Water tank level recovered to ${waterPercent.toFixed(1)}%`, "success", false);
     } else if (waterPercent >= 10 && waterPercent < 25 && !activeAlertConditions.water_warning && !activeAlertConditions.water_critical && !activeAlertConditions.water_overflow_warning) {
         activeAlertConditions.water_warning = true;
         if (notificationPrefs.push) {
-            addAlertToUI("water_warning", `⚠️ Water tank low (${Math.round(waterPercent)}%) — Refill soon`, "warning", true);
+            addAlertToUI("water_warning", `⚠️ Water tank low (${waterPercent.toFixed(1)}%) — Refill soon`, "warning", true);
         }
     } else if (waterPercent >= 25 && activeAlertConditions.water_warning) {
         activeAlertConditions.water_warning = false;
@@ -897,7 +904,7 @@ async function checkAndPlayAlertOnReload() {
             const soil = Number(data.soil) || 0;
             const temp = Number(data.temp) || 0;
             const rawWater = Number(data.water) !== undefined ? Number(data.water) : 12;
-            const waterPercent = waterValueToPercent(rawWater);
+            const waterPercent = waterValueToPercentExact(rawWater);
             const hum = Number(data.hum) || 0;
             const isTankFull = rawWater <= 0.5;
 
@@ -938,10 +945,10 @@ async function checkAndPlayAlertOnReload() {
                             addAlertToUI("temp_critical", `🔥 CRITICAL: Extreme temperature (${temp}°C)! Provide shade!`, "critical", false);
                         }
                     } else if (waterPercent < userThresholds.lowWater) {
-                        showBobNotification("🚨 CRITICAL ALERT", `Water tank is empty (${Math.round(waterPercent)}% < ${userThresholds.lowWater}%)! Activate collection!`, "critical", 8000, true);
+                        showBobNotification("🚨 CRITICAL ALERT", `Water tank is empty (${waterPercent.toFixed(1)}% < ${userThresholds.lowWater}%)! Activate collection!`, "critical", 8000, true);
                         if (!activeAlertConditions.water_critical) {
                             activeAlertConditions.water_critical = true;
-                            addAlertToUI("water_critical", `💧 CRITICAL: Water tank empty (${Math.round(waterPercent)}% < ${userThresholds.lowWater}%)! Activate collection!`, "critical", false);
+                            addAlertToUI("water_critical", `💧 CRITICAL: Water tank empty (${waterPercent.toFixed(1)}% < ${userThresholds.lowWater}%)! Activate collection!`, "critical", false);
                         }
                     } else if (hum < 20) {
                         showBobNotification("🚨 CRITICAL ALERT", `Very low humidity (${hum}%)! Poor water collection!`, "critical", 8000, true);
