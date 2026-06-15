@@ -369,8 +369,8 @@ Ask me anything about your irrigation system!`;
     // API MANAGEMENT
     // ══════════════════════════════════════════════════════════════════════════
     const API = {
-        openrouter: { key: null, name: 'OpenRouter', endpoint: 'https://openrouter.ai/api/v1/chat/completions', model: 'google/gemini-2.0-flash-lite-001' },
-        groq:       { key: null, name: 'Groq',       endpoint: 'https://api.groq.com/openai/v1/chat/completions',   model: 'llama-3.1-8b-instant' }
+        groq:       { key: null, name: 'Groq',       endpoint: 'https://api.groq.com/openai/v1/chat/completions',   model: 'llama-3.3-70b-versatile' },
+        openrouter: { key: null, name: 'OpenRouter', endpoint: 'https://openrouter.ai/api/v1/chat/completions', model: 'meta-llama/llama-4-scout' }
     };
     let apiLoaded = false;
     let activeApiName = 'Local Knowledge';
@@ -397,7 +397,7 @@ Ask me anything about your irrigation system!`;
                     console.log('⚠️ [APIs] No Groq API key found in Firebase config');
                 }
                 
-                activeApiName = API.openrouter.key ? 'OpenRouter AI' : API.groq.key ? 'Groq AI' : 'Local Knowledge';
+                activeApiName = API.groq.key ? 'Groq AI' : API.openrouter.key ? 'OpenRouter AI' : 'Local Knowledge';
             }
         } catch (e) { console.error('❌ [APIs] Failed to load API keys:', e); }
         apiLoaded = true;
@@ -821,7 +821,6 @@ The Reports page lets you export and review your irrigation system's historical 
 
 ### 📥 Export Options:
 • **PDF** — for sharing or printing
-• **CSV** — for spreadsheet analysis
 • **Chart screenshots** — for quick visuals
 
 💡 Ask me "water usage report" or "system health report" for detailed guidance!`;
@@ -1465,22 +1464,9 @@ I'm your built-in AI assistant — ask me anything! 🤖`;
         const systemPrompt = await buildSystemPrompt();
         const messages     = [{ role: 'user', content: question }];
 
-        // Try OpenRouter first if available
-        if (API.openrouter.key) {
-            console.log('🌐 [Chatbot] Attempt 1/3: Calling OpenRouter AI...');
-            const orRes = await callOpenRouter(messages, systemPrompt);
-            if (orRes) {
-                console.log(`✅ [Chatbot] Response generated using: ${activeApiName}`);
-                console.log(`   Response length: ${orRes.length} characters`);
-                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-                return orRes;
-            }
-            console.log('⚠️ [Chatbot] OpenRouter failed or returned invalid response');
-        }
-
-        // Try Groq second if available
+        // Try Groq first — fastest, most generous free tier
         if (API.groq.key) {
-            console.log('⚡ [Chatbot] Attempt 2/3: Calling Groq AI...');
+            console.log('⚡ [Chatbot] Attempt 1/3: Calling Groq AI...');
             const groqRes = await callGroq(messages, systemPrompt);
             if (groqRes) {
                 console.log(`✅ [Chatbot] Response generated using: ${activeApiName}`);
@@ -1489,6 +1475,19 @@ I'm your built-in AI assistant — ask me anything! 🤖`;
                 return groqRes;
             }
             console.log('⚠️ [Chatbot] Groq failed or returned invalid response');
+        }
+
+        // Try OpenRouter as fallback
+        if (API.openrouter.key) {
+            console.log('🌐 [Chatbot] Attempt 2/3: Calling OpenRouter AI...');
+            const orRes = await callOpenRouter(messages, systemPrompt);
+            if (orRes) {
+                console.log(`✅ [Chatbot] Response generated using: ${activeApiName}`);
+                console.log(`   Response length: ${orRes.length} characters`);
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                return orRes;
+            }
+            console.log('⚠️ [Chatbot] OpenRouter failed or returned invalid response');
         }
 
         // Fallback to local knowledge

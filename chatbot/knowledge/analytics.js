@@ -136,7 +136,6 @@ The Reports page lets you export and review your irrigation system's historical 
 
 ### 📥 Export Options:
 • **PDF** — for sharing or printing
-• **CSV** — for spreadsheet analysis
 • **Chart screenshots** — for quick visuals
 
 💡 Ask me about a specific report type for detailed guidance!`;
