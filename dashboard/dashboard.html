@@ -339,18 +339,29 @@
         </div>
 
 
-        <div class="weather-card">
-            <div class="d-flex justify-content-between align-items-center">
-                <div>
-                    <h5 class="mb-0">🌦 Smart Weather Intelligence</h5>
-                    <p class="text-white-50 small">Real-time forecast</p>
+        <div class="weather-card" id="weatherCard">
+            <!-- Particle canvas for rain/snow effects -->
+            <canvas id="particleCanvas"></canvas>
+
+            <div class="card-inner-weather">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-0" style="display:flex;align-items:center;gap:7px">
+                            <span class="weather-live-dot"></span> Smart Weather Intelligence
+                        </h5>
+                        <p style="font-size:11.5px;color:rgba(255,255,255,0.45);margin-top:2px;font-family:monospace;letter-spacing:.04em">REAL-TIME FORECAST</p>
+                    </div>
+                    <button onclick="loadWeather()" id="weatherRefreshBtn" class="weather-refresh-btn">
+                        <i class="fas fa-sync-alt"></i> Refresh
+                    </button>
                 </div>
-                <button onclick="loadWeather()" id="weatherRefreshBtn" class="weather-refresh-btn">
-                    <i class="fas fa-sync-alt"></i> Refresh
-                </button>
+
+                <div id="weatherMain"></div>
+
+                <div class="card-divider"></div>
+                <div class="forecast-section-label">6-Hour Forecast</div>
+                <div id="weatherForecast" class="forecast-horizontal"></div>
             </div>
-            <div id="weatherMain"></div>
-            <div id="weatherForecast" class="forecast-horizontal"></div>
         </div>
 
 

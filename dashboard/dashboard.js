@@ -25,7 +25,7 @@ const tankCmValue = document.getElementById("tankLevelCmValue");
 const pumpToggle = document.getElementById("pumpToggle");
 const pumpText = document.getElementById("pumpStatusText");
 
-const maxTankLevelCm = 30;
+const maxTankLevelCm = 12;
 const maxCapacityLiters = 2;
 let lastWaterLevel = null;
 let isAIActive = false;
@@ -441,7 +441,7 @@ db.ref("sensors").on("value", async (snap) => {
     const tankCapacityText = document.getElementById("tankCapacityText");
     if (tankCapacityText) tankCapacityText.innerText = "2.0 Liters";
     const tankCapacityCm = document.getElementById("tankCapacityCm");
-    if (tankCapacityCm) tankCapacityCm.innerText = "30 cm";
+    if (tankCapacityCm) tankCapacityCm.innerText = "12 cm";
     
     const pumpSnapshot = await pumpRef.once('value');
     updateCardColors(d.temp, d.hum, d.soil, pumpSnapshot.val() === 1);
@@ -474,243 +474,370 @@ db.ref("sensors").on("value", async (snap) => {
     if (isAIActive) runAI(d);
 });
 
-// ================= CHART MODE SETTER =================
-window.setMode = function(m) {
-    mode = m;
-    buildChart();
-};
-
-function buildChart() {
-    if (!chart) return;
-    chart.data.labels = [];
-    chart.data.datasets.forEach(ds => ds.data = []);
-    if (historyData.length === 0) { chart.update(); return; }
-    
-    if (mode === "hour") {
-        const displayData = historyData.slice(-12);
-        displayData.forEach(d => {
-            const date = new Date(d.time);
-            let hour = date.getHours();
-            let ampm = hour >= 12 ? 'PM' : 'AM';
-            let hour12 = hour % 12 || 12;
-            chart.data.labels.push(`${hour12}:00 ${ampm}`);
-            chart.data.datasets[0].data.push(d.temp);
-            chart.data.datasets[1].data.push(d.hum);
-            chart.data.datasets[2].data.push(d.soil);
-            chart.data.datasets[3].data.push(d.water);
-        });
-    } else if (mode === "day") {
-        const dailyMap = new Map();
-        historyData.forEach(d => {
-            const dayKey = new Date(d.time).toLocaleDateString("en-GB");
-            if (!dailyMap.has(dayKey) || d.time > dailyMap.get(dayKey).time) {
-                dailyMap.set(dayKey, { temp: d.temp, hum: d.hum, soil: d.soil, water: d.water, time: d.time, label: dayKey });
-            }
-        });
-        Array.from(dailyMap.values()).slice(-7).forEach(day => {
-            chart.data.labels.push(day.label);
-            chart.data.datasets[0].data.push(day.temp);
-            chart.data.datasets[1].data.push(day.hum);
-            chart.data.datasets[2].data.push(day.soil);
-            chart.data.datasets[3].data.push(day.water);
-        });
-    } else if (mode === "month") {
-        const monthlyMap = new Map();
-        historyData.forEach(d => {
-            const monthKey = new Date(d.time).toLocaleDateString("en-GB", { month: 'short', year: 'numeric' });
-            if (!monthlyMap.has(monthKey) || d.time > monthlyMap.get(monthKey).time) {
-                monthlyMap.set(monthKey, { temp: d.temp, hum: d.hum, soil: d.soil, water: d.water, time: d.time, label: monthKey });
-            }
-        });
-        Array.from(monthlyMap.values()).slice(-6).forEach(month => {
-            chart.data.labels.push(month.label);
-            chart.data.datasets[0].data.push(month.temp);
-            chart.data.datasets[1].data.push(month.hum);
-            chart.data.datasets[2].data.push(month.soil);
-            chart.data.datasets[3].data.push(month.water);
-        });
-    }
-    chart.update();
-}
-
 // ================= WEATHER WITH SKYCONS + RAIN ALERT =================
 const WEATHER_API_KEY = "5dd74768dc40a34a27ac51503c655bec";
 const CITY = "Port Said";
 
+// ── Skycons init ───────────────────────────────────────────────────
 function initSkycons() {
-    if (typeof Skycons !== 'undefined') {
+    if (typeof Skycons !== "undefined" && !skycons) {
         skycons = new Skycons({ color: "#ffffff", monochrome: false });
         skycons.play();
     }
 }
 
-function mapWeatherToSkycon(condition) {
-    const c = condition.toLowerCase();
-    if (c.includes('thunderstorm')) return Skycons.RAIN;
-    if (c.includes('rain')) return Skycons.RAIN;
-    if (c.includes('drizzle')) return Skycons.SLEET;
-    if (c.includes('snow')) return Skycons.SNOW;
-    if (c.includes('mist') || c.includes('fog') || c.includes('haze')) return Skycons.FOG;
-    if (c.includes('clear')) return Skycons.CLEAR_DAY;
-    return Skycons.PARTLY_CLOUDY_DAY;
+// ── Smart day/night using API timezone offset ──────────────────────
+// Converts dt to the city's local hour, then compares against
+// sunrise/sunset LOCAL hours. Works correctly across all forecast days.
+function _isNight(dt, tzOffset, srHour, ssHour) {
+    var localHour = new Date((dt + tzOffset) * 1000).getUTCHours();
+    // srHour/ssHour are also derived in local city time
+    return localHour < srHour || localHour >= ssHour;
 }
 
-window.loadWeather = async function() {
-    const weatherMain = document.getElementById("weatherMain");
-    const weatherForecast = document.getElementById("weatherForecast");
-    const refreshBtn = document.getElementById("weatherRefreshBtn");
-    
-    if (!weatherMain || !weatherForecast) return;
-    if (refreshBtn) {
-        refreshBtn.disabled = true;
-        refreshBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Refresh';
-    }
-    
-    try {
-        const res = await fetch(`https://api.openweathermap.org/data/2.5/forecast?q=${CITY}&appid=${WEATHER_API_KEY}&units=metric`);
-        const data = await res.json();
-        if (data.cod !== "200") throw new Error();
-        
-        const now = new Date();
-        const currentWeather = data.list[0];
-        const skyconType = mapWeatherToSkycon(currentWeather.weather[0].main);
-        const iconId = `weatherIcon_${Date.now()}`;
-        
-        weatherMain.innerHTML = `
-            <div class="d-flex justify-content-between align-items-center flex-wrap mt-2">
-                <div>
-                    <h5 class="mb-0">📍 ${CITY}, Egypt</h5>
-                    <small>${now.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}</small>
-                    <div class="mt-1"><small>⏰ ${now.toLocaleTimeString()}</small></div>
-                </div>
-                <div class="text-end">
-                    <canvas id="${iconId}" width="48" height="48" style="margin: 0 auto;"></canvas>
-                    <div class="display-6">${Math.round(currentWeather.main.temp)}°C</div>
-                    <small class="text-capitalize">${currentWeather.weather[0].description}</small>
-                </div>
-            </div>
-            <div class="row mt-3 text-center">
-                <div class="col-4">
-                    <small>Feels Like</small>
-                    <div class="fw-bold">${Math.round(currentWeather.main.feels_like)}°C</div>
-                </div>
-                <div class="col-4">
-                    <small>Humidity</small>
-                    <div class="fw-bold">${currentWeather.main.humidity}%</div>
-                </div>
-                <div class="col-4">
-                    <small>Wind</small>
-                    <div class="fw-bold">${Math.round(currentWeather.wind.speed)} km/h</div>
-                </div>
-            </div>
-        `;
-        
-        if (skycons) {
-            skycons.add(iconId, skyconType);
-            setTimeout(() => skycons.play(), 100);
-        }
-        
-        // Check for rain in next 3 forecast periods
-        const rainExpected = data.list.slice(0, 3).some(item => 
-            item.weather[0].main.toLowerCase().includes('rain')
-        );
-        
-        // RAIN ALERT - Bob with NO sound (just info)
-        if (rainExpected && !rainAlertShown) {
-            rainAlertShown = true;
-            window.showBobNotification("🌧️ Rain Expected", "Rain coming soon! Natural irrigation will help your plants.", "success", 8000, false);
-            window.addAlertToUI(`rain_alert_${Date.now()}`, "🌧️ Rain expected in the next few hours", "warning", true);
-        } else if (!rainExpected && rainAlertShown) {
-            rainAlertShown = false;
-        }
-        
-        weatherRainExpected = rainExpected;
-        window.weatherRainExpected = rainExpected;
-        
-        let forecastHtml = '';
-        data.list.slice(0, 6).forEach((item, idx) => {
-            const time = new Date(item.dt_txt);
-            const forecastIconId = `forecastIcon_${Date.now()}_${idx}`;
-            const isRain = item.weather[0].main.toLowerCase().includes('rain');
-            const rainBadge = isRain ? '<span class="badge bg-info mt-1">🌧️ Rain</span>' : '';
-            forecastHtml += `
-                <div class="forecast-item">
-                    <div class="small">${time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-                    <canvas id="${forecastIconId}" width="32" height="32"></canvas>
-                    <div class="fw-bold">${Math.round(item.main.temp)}°C</div>
-                    <small class="d-block text-capitalize">${item.weather[0].description}</small>
-                    ${rainBadge}
-                </div>
-            `;
-        });
-        weatherForecast.innerHTML = forecastHtml;
-        
-        if (skycons) {
-            data.list.slice(0, 6).forEach((item, idx) => {
-                const forecastSkycon = mapWeatherToSkycon(item.weather[0].main);
-                const forecastIconId = `forecastIcon_${Date.now()}_${idx}`;
-                skycons.add(forecastIconId, forecastSkycon);
-            });
-            setTimeout(() => skycons.play(), 200);
-        }
-        
-    } catch (err) {
-        console.error(err);
-        weatherMain.innerHTML = '<div class="text-danger mt-2">❌ Weather connection error</div>';
-    } finally {
-        if (refreshBtn) {
-            refreshBtn.disabled = false;
-            refreshBtn.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh';
-        }
-    }
-};
+// ── Condition → Skycon string ──────────────────────────────────────
+function mapWeatherToSkycon(condition, description, dt, tzOffset, srHour, ssHour) {
+    var c = (condition   || "").toLowerCase();
+    var d = (description || "").toLowerCase();
+    var night = _isNight(dt, tzOffset, srHour, ssHour);
 
-// ================= PDF REPORT =================
-window.downloadPDF = async function(reportType) {
+    if (c.includes("thunderstorm"))                               return "rain";
+    if (c.includes("drizzle"))                                    return "sleet";
+    if (c.includes("rain"))                                       return "rain";
+    if (c.includes("snow")) return d.includes("sleet") ? "sleet" : "snow";
+    if (c.includes("mist")  || c.includes("fog")  || c.includes("haze")  ||
+        c.includes("smoke") || c.includes("dust") || c.includes("sand")  ||
+        c.includes("ash")   || c.includes("squall") || c.includes("tornado")) return "fog";
+    if (c.includes("clear"))
+        return night ? "clear-night" : "clear-day";
+    if (d.includes("few clouds") || d.includes("scattered"))
+        return night ? "partly-cloudy-night" : "partly-cloudy-day";
+    if (c.includes("cloud")) return "cloudy";
+    if (c.includes("wind"))  return "wind";
+    return night ? "partly-cloudy-night" : "partly-cloudy-day";
+}
+
+// ── Condition → theme class ────────────────────────────────────────
+function conditionToTheme(condition) {
+    var c = (condition || "").toLowerCase();
+    if (c.includes("thunderstorm"))                                    return "theme-storm";
+    if (c.includes("rain") || c.includes("drizzle"))                  return "theme-rain";
+    if (c.includes("snow"))                                            return "theme-snow";
+    if (c.includes("mist") || c.includes("fog") || c.includes("haze")) return "theme-fog";
+    if (c.includes("clear"))                                           return "theme-clear";
+    return "theme-clouds";
+}
+
+function applyTheme(condition) {
+    var card = document.getElementById("weatherCard");
+    if (!card) return;
+    var themes = ["theme-clear","theme-rain","theme-storm","theme-snow","theme-fog","theme-clouds"];
+    card.classList.remove.apply(card.classList, themes);
+    card.classList.add(conditionToTheme(condition));
+}
+
+// ── Safe Skycon attach ─────────────────────────────────────────────
+function safeAddSkycon(id, type, retries) {
+    if (retries === undefined) retries = 20;
+    if (typeof Skycons === "undefined") return;
+    if (!skycons) initSkycons();
+    if (!skycons) return;
+    var el = document.getElementById(id);
+    if (el) {
+        try { skycons.add(id, type); } catch (e) {}
+        skycons.play();
+    } else if (retries > 0) {
+        requestAnimationFrame(function () { safeAddSkycon(id, type, retries - 1); });
+    }
+}
+
+// ── Live clock ─────────────────────────────────────────────────────
+var _clockInterval = null;
+function startLiveClock() {
+    // Always kill the previous ticker first — prevents orphaned intervals
+    // writing to detached (replaced) DOM nodes, which caused the clock
+    // to appear frozen after a loadWeather() re-render.
+    if (_clockInterval !== null) {
+        clearInterval(_clockInterval);
+        _clockInterval = null;
+    }
+    var tick = function () {
+        // Look up #liveClock fresh every second so we always write
+        // to the current element, not a stale reference from a previous render.
+        var el = document.getElementById("liveClock");
+        if (!el) return;
+        el.textContent = new Date().toLocaleTimeString("en-US", {
+            hour: "2-digit", minute: "2-digit", second: "2-digit"
+        });
+    };
+    tick();
+    _clockInterval = setInterval(tick, 1000);
+}
+
+// ── Particle system ────────────────────────────────────────────────
+var ParticleSystem = (function () {
+    var canvas, ctx, _type, _active = false, _raf, _particles = [];
+    function resize() {
+        var card = document.getElementById("weatherCard");
+        if (!canvas || !card) return;
+        canvas.width = card.offsetWidth; canvas.height = card.offsetHeight;
+    }
+    function mkRain(w, h) {
+        return { x: Math.random()*w, y: Math.random()*h*-1,
+                 len: 10+Math.random()*14, speed: 8+Math.random()*12,
+                 opacity: 0.25+Math.random()*0.4, width: 0.8+Math.random()*0.7 };
+    }
+    function mkSnow(w, h) {
+        return { x: Math.random()*w, y: Math.random()*h*-1,
+                 r: 1.5+Math.random()*3, speed: 0.8+Math.random()*2,
+                 drift: (Math.random()-0.5)*0.6, opacity: 0.5+Math.random()*0.45 };
+    }
+    function tick() {
+        if (!_active || !ctx) return;
+        var w = canvas.width, h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+        _particles.forEach(function (p) {
+            if (_type === "rain") {
+                ctx.strokeStyle = "rgba(147,210,255,"+p.opacity+")";
+                ctx.lineWidth = p.width;
+                ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x-1, p.y+p.len); ctx.stroke();
+                p.y += p.speed;
+                if (p.y > h) { Object.assign(p, mkRain(w,h)); p.y = -p.len; }
+            } else {
+                ctx.fillStyle = "rgba(220,240,255,"+p.opacity+")";
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
+                p.y += p.speed; p.x += p.drift;
+                if (p.y > h || p.x < 0 || p.x > w) { Object.assign(p, mkSnow(w,h)); p.y = -5; }
+            }
+        });
+        _raf = requestAnimationFrame(tick);
+    }
+    return {
+        start: function (type) {
+            canvas = document.getElementById("particleCanvas");
+            if (!canvas) return;
+            ctx = canvas.getContext("2d"); _type = type; _active = true; resize();
+            var count = type === "rain" ? 90 : 60;
+            _particles = Array.from({length: count}, function () {
+                return type === "rain" ? mkRain(canvas.width, canvas.height) : mkSnow(canvas.width, canvas.height);
+            });
+            canvas.classList.add("active"); cancelAnimationFrame(_raf); tick();
+        },
+        stop: function () {
+            _active = false; cancelAnimationFrame(_raf);
+            var c = document.getElementById("particleCanvas");
+            if (c) { c.classList.remove("active"); var x = c.getContext("2d"); if(x) x.clearRect(0,0,c.width,c.height); }
+            _particles = [];
+        },
+        resize: function () { resize(); }
+    };
+})();
+window.addEventListener("resize", function () { ParticleSystem.resize(); });
+
+// ── Loading skeleton ───────────────────────────────────────────────
+function renderSkeleton() {
+    var wm = document.getElementById("weatherMain");
+    var wf = document.getElementById("weatherForecast");
+    if (wm) wm.innerHTML =
+        '<div class="skeleton-wrap">'
+      + '<div class="wg-main-grid">'
+      +   '<div style="flex:1">'
+      +     '<div class="skel" style="height:20px;width:60%;margin-bottom:8px"></div>'
+      +     '<div class="skel" style="height:12px;width:38%;margin-bottom:6px"></div>'
+      +     '<div class="skel" style="height:12px;width:25%"></div>'
+      +   '</div>'
+      +   '<div class="wg-temp-block">'
+      +     '<div class="skel" style="width:72px;height:72px;border-radius:50%;margin:0 auto 8px"></div>'
+      +     '<div class="skel" style="height:46px;width:88px;margin:0 auto 6px"></div>'
+      +     '<div class="skel" style="height:12px;width:64px;margin:0 auto"></div>'
+      +   '</div>'
+      + '</div>'
+      + '<div class="wg-stats">'
+      +   '<div class="skel wg-stat-chip" style="height:56px"></div>'
+      +   '<div class="skel wg-stat-chip" style="height:56px"></div>'
+      +   '<div class="skel wg-stat-chip" style="height:56px"></div>'
+      + '</div>'
+      + '</div>';
+    if (wf) wf.innerHTML = [0,1,2,3,4,5].map(function () {
+        return '<div class="skel" style="height:118px;border-radius:16px"></div>';
+    }).join("");
+}
+
+// ── Error state ────────────────────────────────────────────────────
+function renderWeatherError(msg) {
+    var wm = document.getElementById("weatherMain");
+    var wf = document.getElementById("weatherForecast");
+    if (wm) wm.innerHTML =
+        '<div class="wg-error fade-in-wg">'
+      +   '<i class="fas fa-triangle-exclamation"></i>'
+      +   '<p>' + (msg || "Could not fetch weather data.") + '</p>'
+      +   '<button onclick="loadWeather()">'
+      +     '<i class="fas fa-rotate-right"></i>&nbsp; Try again'
+      +   '</button>'
+      + '</div>';
+    if (wf) wf.innerHTML = "";
+}
+
+// ── Render current conditions ──────────────────────────────────────
+function renderMain(cur, now, tzOffset, srHour, ssHour) {
+    var wm = document.getElementById("weatherMain");
+    if (!wm) return;
+    var skyconType = mapWeatherToSkycon(
+        cur.weather[0].main, cur.weather[0].description, cur.dt, tzOffset, srHour, ssHour
+    );
+
+    wm.innerHTML =
+        '<div class="wg-main-grid fade-in-wg">'
+      +   '<div class="wg-location">'
+      +     '<div class="wg-city">' + CITY + ', Egypt</div>'
+      +     '<div class="wg-date">' + now.toLocaleDateString("en-US", {weekday:"long",year:"numeric",month:"long",day:"numeric"}) + '</div>'
+      +     '<div id="liveClock"></div>'
+      +   '</div>'
+      +   '<div class="wg-temp-block">'
+      +     '<canvas id="weatherIcon_main" width="72" height="72" class="wg-icon-canvas"></canvas>'
+      +     '<div class="wg-temp">' + Math.round(cur.main.temp) + '<sup>°C</sup></div>'
+      +     '<div class="wg-desc">' + cur.weather[0].description + '</div>'
+      +   '</div>'
+      + '</div>'
+      + '<div class="wg-stats">'
+      +   '<div class="wg-stat-chip">'
+      +     '<div class="wg-stat-label">Feels Like</div>'
+      +     '<div class="wg-stat-val"><i class="fas fa-temperature-half wg-stat-icon"></i>' + Math.round(cur.main.feels_like) + '°</div>'
+      +   '</div>'
+      +   '<div class="wg-stat-chip">'
+      +     '<div class="wg-stat-label">Humidity</div>'
+      +     '<div class="wg-stat-val"><i class="fas fa-droplet wg-stat-icon"></i>' + cur.main.humidity + '%</div>'
+      +   '</div>'
+      +   '<div class="wg-stat-chip">'
+      +     '<div class="wg-stat-label">Wind</div>'
+      +     '<div class="wg-stat-val"><i class="fas fa-wind wg-stat-icon"></i>' + Math.round(cur.wind.speed) + '<small class="wg-unit"> km/h</small></div>'
+      +   '</div>'
+      + '</div>';
+
+    requestAnimationFrame(startLiveClock);
+    safeAddSkycon("weatherIcon_main", skyconType);
+}
+
+// ── Render forecast strip ──────────────────────────────────────────
+function renderForecast(list, tzOffset, srHour, ssHour) {
+    var wf = document.getElementById("weatherForecast");
+    if (!wf) return;
+    var slots = list.slice(0, 6);
+    var html  = "";
+    slots.forEach(function (item, idx) {
+        var time   = new Date(item.dt_txt + "Z"); // parse as UTC
+        var localH = new Date((item.dt + tzOffset) * 1000).getUTCHours();
+        var localM = new Date((item.dt + tzOffset) * 1000).getUTCMinutes();
+        var ampm   = localH >= 12 ? "PM" : "AM";
+        var h12    = localH % 12 || 12;
+        var timeStr = h12.toString().padStart(2,"0") + ":" + localM.toString().padStart(2,"0") + " " + ampm;
+        var iconId  = "fcIcon_" + idx;
+        var isRain  = item.weather[0].main.toLowerCase().includes("rain");
+        html +=
+            '<div class="wg-fc-item' + (isRain ? " wg-fc-rain" : "") + ' fade-in-wg" style="animation-delay:' + (idx*0.06) + 's">'
+          +   '<div class="wg-fc-time">' + (idx === 0 ? "Now" : timeStr) + '</div>'
+          +   '<canvas id="' + iconId + '" width="36" height="36" style="width:36px;height:36px;display:block;margin:0 auto"></canvas>'
+          +   '<div class="wg-fc-temp">' + Math.round(item.main.temp) + '°</div>'
+          +   '<div class="wg-fc-desc">' + item.weather[0].description + '</div>'
+          +   (isRain ? '<span class="wg-fc-rain-badge">Rain</span>' : "")
+          + '</div>';
+    });
+    wf.innerHTML = html;
+
+    requestAnimationFrame(function () {
+        slots.forEach(function (item, idx) {
+            safeAddSkycon("fcIcon_" + idx,
+                mapWeatherToSkycon(item.weather[0].main, item.weather[0].description,
+                                   item.dt, tzOffset, srHour, ssHour));
+        });
+    });
+}
+
+// ── Rain alert ─────────────────────────────────────────────────────
+function handleRainAlert(rainExpected) {
+    var wm = document.getElementById("weatherMain");
+    if (rainExpected && !rainAlertShown) {
+        rainAlertShown = true;
+        var stats = wm && wm.querySelector(".wg-stats");
+        if (stats) {
+            var bar = document.createElement("div");
+            bar.className = "wg-rain-bar";
+            bar.innerHTML = '<i class="fas fa-cloud-rain"></i> Rain expected soon — natural irrigation incoming!';
+            stats.after(bar);
+        }
+        if (typeof window.showBobNotification === "function")
+            window.showBobNotification("\uD83C\uDF27\uFE0F Rain Expected", "Rain coming soon! Natural irrigation will help your plants.", "success", 8000, false);
+        if (typeof window.addAlertToUI === "function")
+            window.addAlertToUI("rain_alert_" + Date.now(), "\uD83C\uDF27\uFE0F Rain expected in the next few hours", "warning", true);
+    } else if (!rainExpected && rainAlertShown) {
+        rainAlertShown = false;
+    }
+    weatherRainExpected        = rainExpected;
+    window.weatherRainExpected = rainExpected;
+}
+
+// ── Main load ──────────────────────────────────────────────────────
+window.loadWeather = async function () {
+    var wm  = document.getElementById("weatherMain");
+    var wf  = document.getElementById("weatherForecast");
+    var btn = document.getElementById("weatherRefreshBtn");
+    if (!wm || !wf) return;
+    if (!skycons) initSkycons();
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading'; }
+    renderSkeleton();
+
     try {
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF('l', 'mm', 'a4');
-        
-        const primary = [41, 128, 185];
-        
-        doc.setFillColor(...primary);
-        doc.rect(0, 0, 297, 35, "F");
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(22);
-        doc.text("HydroGen Smart Report", 20, 22);
-        doc.setFontSize(12);
-        doc.text(`${reportType.toUpperCase()} REPORT`, 20, 32);
-        doc.setFontSize(9);
-        doc.text(`Generated: ${new Date().toLocaleString()}`, 200, 20);
-        
-        let y = 50;
-        doc.setFontSize(14);
-        doc.text("Current Sensor Readings", 20, y);
-        y += 10;
-        doc.setFontSize(11);
-        doc.setTextColor(0, 0, 0);
-        if (envTemp) doc.text(`Temperature: ${envTemp.innerText}`, 20, y); y += 8;
-        if (envHum) doc.text(`Humidity: ${envHum.innerText}`, 20, y); y += 8;
-        if (envSoil) doc.text(`Soil Moisture: ${envSoil.innerText}`, 20, y); y += 8;
-        
-        const sensors = await db.ref('sensors').once('value');
-        const waterValue = sensors.val()?.water || 12;
-        doc.text(`Water Tank: ${waterValueToPercent(waterValue)}% (${waterValueToLiters(waterValue).toFixed(2)}L / 2L)`, 20, y); y += 15;
-        
-        doc.text(`AI Mode: ${isAIActive ? "ACTIVE 🤖" : "MANUAL 👤"}`, 20, y); y += 10;
-        
-        doc.setFillColor(...primary);
-        doc.rect(0, 200, 297, 10, "F");
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(9);
-        doc.text("HydroGen AI System © 2026 - Smart Irrigation • Data Driven • Sustainable", 20, 207);
-        
-        doc.save(`HydroGen_${reportType}_Report.pdf`);
-        window.showBobNotification("📄 Report downloaded", `Your ${reportType} report is ready`, "success", 3000, false);
-        
-    } catch (error) {
-        console.error("PDF Error:", error);
-        window.showBobNotification("❌ PDF Failed", "Could not generate report", "warning", 3000, true);
+        var res  = await fetch(
+            "https://api.openweathermap.org/data/2.5/forecast?q=" + encodeURIComponent(CITY) +
+            "&appid=" + WEATHER_API_KEY + "&units=metric",
+            { signal: AbortSignal.timeout(10000) }
+        );
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        var data = await res.json();
+        if (String(data.cod) !== "200") throw new Error(data.message || "API error");
+
+        var now      = new Date();
+        var cur      = data.list[0];
+        var tzOffset = data.city.timezone;  // seconds east of UTC
+        var srHour   = new Date((data.city.sunrise + tzOffset) * 1000).getUTCHours();
+        var ssHour   = new Date((data.city.sunset  + tzOffset) * 1000).getUTCHours();
+
+        // Store for chatbot
+        window._hydroWeatherData = {
+            current: cur, list: data.list, city: CITY,
+            sunrise: data.city.sunrise, sunset: data.city.sunset,
+            tzOffset: tzOffset, srHour: srHour, ssHour: ssHour,
+            fetchedAt: Date.now()
+        };
+
+        applyTheme(cur.weather[0].main);
+        renderMain(cur, now, tzOffset, srHour, ssHour);
+        renderForecast(data.list, tzOffset, srHour, ssHour);
+
+        var cond = cur.weather[0].main.toLowerCase();
+        if (cond.includes("rain") || cond.includes("drizzle") || cond.includes("thunderstorm")) {
+            ParticleSystem.start("rain");
+        } else if (cond.includes("snow")) {
+            ParticleSystem.start("snow");
+        } else {
+            ParticleSystem.stop();
+        }
+
+        var rainExpected = data.list.slice(0, 3).some(function (i) {
+            return i.weather[0].main.toLowerCase().includes("rain");
+        });
+        handleRainAlert(rainExpected);
+
+    } catch (err) {
+        console.error("[Weather]", err);
+        renderWeatherError(
+            err && err.name === "TimeoutError"
+                ? "Connection timed out — check your network."
+                : "Could not fetch weather data."
+        );
+        ParticleSystem.stop();
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh'; }
     }
 };
 
