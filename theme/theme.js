@@ -464,6 +464,11 @@ function addAlertToUI(alertId, message, type, playSound = false) {
 
     alertsBox.insertBefore(alertDiv, alertsBox.firstChild);
 
+    // Auto-dismiss schedule/success/info alerts after 10 minutes
+    if (type === 'success' || type === 'info') {
+        setTimeout(() => window.dismissAlert(uniqueId), 600000);
+    }
+
     if (playSound) {
         playBobSound();
     }
@@ -800,9 +805,76 @@ function checkSensorAlerts(sensorData) {
     setTimeout(showNoAlertsMessage, 100);
 }
 
+// ===================== GLOBAL SCHEDULE NOTIFIER =====================
+// Runs on EVERY page — fires Bob + ring alert once per schedule per day
+// Does NOT execute irrigation, only notifies.
+let _scheduleNotifierInterval = null;
+
+function startGlobalScheduleNotifier() {
+    if (!window.hydroGenDB || !shouldEnableAlerts()) {
+        setTimeout(startGlobalScheduleNotifier, 2000);
+        return;
+    }
+    if (_scheduleNotifierInterval) return; // already running
+
+    async function checkScheduleNotifications() {
+        if (!shouldEnableAlerts()) return;
+        try {
+            const rawUser = localStorage.getItem('hydroUser');
+            const hydroUser = rawUser ? JSON.parse(rawUser) : null;
+            const userId = (hydroUser && (hydroUser.uid || hydroUser.id)) || "fcyeSoWkmqcgafPCQAN6vtV5M2";
+            const now = new Date();
+            const currentTime = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+            const currentDay  = now.toLocaleDateString('en-US', { weekday: 'long' });
+            const currentDate = now.toISOString().split('T')[0];
+
+            const [schedSnap, zoneSnap] = await Promise.all([
+                window.hydroGenDB.ref(`users_w/${userId}/schedules`).once('value'),
+                window.hydroGenDB.ref(`users_w/${userId}/zones`).once('value')
+            ]);
+            const schedules = schedSnap.val() ? Object.values(schedSnap.val()) : [];
+            const zones     = zoneSnap.val()  ? Object.values(zoneSnap.val())  : [];
+
+            for (const schedule of schedules) {
+                if (!schedule.isActive) continue;
+                if (schedule.startDate && schedule.startDate > currentDate) continue;
+                if (schedule.time !== currentTime) continue;
+                if (!schedule.days || !schedule.days.includes(currentDay)) continue;
+
+                const notifKey = `schedNotif_${schedule.id}_${currentDate}`;
+                if (localStorage.getItem(notifKey)) continue; // already notified today
+                localStorage.setItem(notifKey, '1');
+
+                const zone = zones.find(z => z.id === schedule.zoneId);
+                const zoneName = zone ? zone.name : (schedule.zoneName || 'zone');
+                const msg = `⏰ Schedule "${schedule.name}" — ${zoneName} irrigation starting now`;
+
+                showBobNotification('💧 Schedule Time', msg, 'info', 9000, true);
+                addAlertToUI(`sched_notif_${schedule.id}_${Date.now()}`, msg, 'info', false);
+
+                // Cleanup old notif keys (keep last 7 days)
+                for (let i = localStorage.length - 1; i >= 0; i--) {
+                    const k = localStorage.key(i);
+                    if (k && k.startsWith('schedNotif_')) {
+                        const datePart = k.split('_').pop();
+                        const age = (now - new Date(datePart)) / 86400000;
+                        if (age > 7) localStorage.removeItem(k);
+                    }
+                }
+            }
+        } catch(e) {
+            console.log('[ScheduleNotifier]', e);
+        }
+    }
+
+    checkScheduleNotifications();
+    _scheduleNotifierInterval = setInterval(checkScheduleNotifications, 60000);
+}
+
 // Start the universal listener
 if (shouldEnableAlerts()) {
     startUniversalSensorListener();
+    startGlobalScheduleNotifier();
 }
 
 document.addEventListener('click', (e) => {

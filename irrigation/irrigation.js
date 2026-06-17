@@ -486,9 +486,38 @@ window.addNewZone = async function() {
     document.getElementById('soilTargetValue').innerText = '60%';
 };
 
+function updateEditZoneSelect() {
+    const sel = document.getElementById('editZoneSelect');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">-- Select a zone --</option>' +
+        zones.map(z => `<option value="${z.id}">${z.icon || '🌱'} ${escapeHtml(z.name)}</option>`).join('');
+}
+
+window.onEditZoneSelect = function(zoneId) {
+    if (!zoneId) return;
+    const zone = zones.find(z => z.id === zoneId);
+    if (!zone) return;
+    document.getElementById('editZoneId').value = zone.id;
+    document.getElementById('editZoneName').value = zone.name;
+    document.getElementById('editZoneIcon').value = zone.icon || '🌱';
+    document.getElementById('editZoneDuration').value = zone.duration || 30;
+    document.getElementById('editZoneWaterAmount').value = zone.waterPerCycle || 10;
+    document.getElementById('editZonePriority').value = zone.priority || 2;
+    document.getElementById('editZoneSoilTarget').value = zone.soilTarget || 60;
+    document.getElementById('editSoilTargetValue').innerText = `${zone.soilTarget || 60}%`;
+    document.getElementById('editZoneTime').value = zone.time || '06:00';
+    document.getElementById('editZoneStartDate').value = zone.startDate || '';
+    document.getElementById('editZoneEndDate').value = zone.endDate || '';
+    document.getElementById('editZoneDescription').value = zone.description || '';
+    setupEditSoilTargetSlider();
+};
+
 window.editZone = async function(zoneId) {
     const zone = zones.find(z => z.id === zoneId);
     if (!zone) return;
+    updateEditZoneSelect();
+    const sel = document.getElementById('editZoneSelect');
+    if (sel) sel.value = zoneId;
     document.getElementById('editZoneId').value = zone.id;
     document.getElementById('editZoneName').value = zone.name;
     document.getElementById('editZoneIcon').value = zone.icon || '🌱';
@@ -586,7 +615,8 @@ window.editSchedule = async function(scheduleId) {
     document.getElementById('editScheduleStartDate').value = schedule.startDate || '';
     
     const zoneSelect = document.getElementById('editScheduleZone');
-    zoneSelect.innerHTML = '<option value="">Choose zone...</option>' + zones.map(z => `<option value="${z.id}" ${z.id === schedule.zoneId ? 'selected' : ''}>${z.icon || '🌱'} ${escapeHtml(z.name)}</option>`).join('');
+    zoneSelect.innerHTML = '<option value="">Choose zone...</option>' + zones.map(z => `<option value="${z.id}">${z.icon || '🌱'} ${escapeHtml(z.name)}</option>`).join('');
+    zoneSelect.value = schedule.zoneId;
     
     // Reset all checkboxes first
     const allCheckboxes = document.querySelectorAll('#editScheduleModal .day-checkbox');
