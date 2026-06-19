@@ -2,17 +2,59 @@
 
 // ── Auth Guard ──
 (function () {
-  if (!localStorage.getItem("hydroUser")) {
-    window.location.replace("../landing/landing.html");
-  }
+    try {
+        if (!localStorage.getItem("hydroUser")) {
+            window.location.replace("../landing/landing.html");
+        }
+    } catch (e) {
+        console.error("Storage access denied or corrupted.", e);
+    }
 })();
 
 document.addEventListener('DOMContentLoaded', () => {
-    // logout + notif handled by theme.js
+    // ── Utility: Safe Storage Manager ──
+    const StorageManager = {
+        get: (key, fallback = null) => {
+            try {
+                const item = localStorage.getItem(key);
+                return item ? JSON.parse(item) : fallback;
+            } catch (e) {
+                console.warn(`[Storage] Error parsing ${key}:`, e);
+                return fallback;
+            }
+        },
+        set: (key, value) => {
+            try {
+                localStorage.setItem(key, JSON.stringify(value));
+                return true;
+            } catch (e) {
+                console.warn(`[Storage] Error saving ${key}:`, e);
+                return false;
+            }
+        },
+        remove: (key) => {
+            try { localStorage.removeItem(key); } catch (e) {}
+        }
+    };
+
+    // ── Utility: Safe Event Listener ──
+    const safeAddEventListener = (id, event, handler) => {
+        const element = document.getElementById(id);
+        if (element) {
+            element.addEventListener(event, handler);
+        } else {
+            console.warn(`[DOM] Element #${id} not found for event binding.`);
+        }
+    };
 
     // 1. Initialize UI Elements & Toasts
     const saveToastEl = document.getElementById('saveToast');
-    const saveToast = new bootstrap.Toast(saveToastEl);
+    let saveToast = null;
+    
+    // Check if Bootstrap is loaded before initializing Toast
+    if (typeof bootstrap !== 'undefined' && saveToastEl) {
+        saveToast = new bootstrap.Toast(saveToastEl);
+    }
 
     const lowWaterSlider = document.getElementById('lowWaterThreshold');
     const lowWaterValue = document.getElementById('lowWaterValue');
@@ -25,163 +67,218 @@ document.addEventListener('DOMContentLoaded', () => {
     loadFirebaseConfig();
     loadHardwareThresholds();
 
-    // 3. Real-time Slider Updates
-    lowWaterSlider.oninput = () => lowWaterValue.innerText = lowWaterSlider.value;
-    drySoilSlider.oninput = () => drySoilValue.innerText = drySoilSlider.value;
+    // 3. Real-time Slider Updates (Using 'input' event correctly)
+    if (lowWaterSlider && lowWaterValue) {
+        lowWaterSlider.addEventListener('input', (e) => {
+            lowWaterValue.innerText = e.target.value;
+        });
+    }
 
-    // 4. Form Submissions
+    if (drySoilSlider && drySoilValue) {
+        drySoilSlider.addEventListener('input', (e) => {
+            drySoilValue.innerText = e.target.value;
+        });
+    }
 
-    // Profile
-    document.getElementById('profileForm').onsubmit = (e) => {
+    // 4. Form Submissions & Click Handlers
+
+    // Profile Form
+    safeAddEventListener('profileForm', 'submit', (e) => {
         e.preventDefault();
-        const name  = document.getElementById('inputName').value.trim();
-        const email = document.getElementById('inputEmail').value.trim();
-        const phone = document.getElementById('inputPhone').value.trim();
+        const name = document.getElementById('inputName')?.value.trim() || '';
+        const email = document.getElementById('inputEmail')?.value.trim() || '';
+        const phone = document.getElementById('inputPhone')?.value.trim() || '';
 
         const profile = { name, email, phone };
-        localStorage.setItem('hydroGenProfile', JSON.stringify(profile));
+        StorageManager.set('hydroGenProfile', profile);
 
-        // also update hydroUser so header shows new name/email
-        try {
-            const raw  = localStorage.getItem("hydroUser");
-            const user = raw ? JSON.parse(raw) : {};
-            if (name)  user.name  = name;
-            if (email) user.email = email;
-            localStorage.setItem("hydroUser", JSON.stringify(user));
-        } catch(e) {}
+        // Update hydroUser securely
+        const user = StorageManager.get("hydroUser", {});
+        if (name) user.name = name;
+        if (email) user.email = email;
+        StorageManager.set("hydroUser", user);
 
-        // update header live without reload
+        // Update header UI live using Optional Chaining and precise ID matching
         const usernameEl = document.getElementById("username");
-        const emailEl    = document.getElementById("email");
-        const avatarEl   = document.querySelector(".avatar");
-        if (usernameEl) usernameEl.textContent = name  || usernameEl.textContent;
-        if (emailEl)    emailEl.textContent    = email || emailEl.textContent;
-        if (avatarEl && name) avatarEl.textContent = name[0].toUpperCase();
+        const emailEl = document.getElementById("email");
+        const avatarEl = document.getElementById("userAvatar"); // Fixed: using ID instead of class
+        
+        if (usernameEl && name) usernameEl.textContent = name;
+        if (emailEl && email) emailEl.textContent = email;
+        if (avatarEl && name) avatarEl.textContent = name.charAt(0).toUpperCase();
 
         showFeedback('Profile updated successfully ✅');
-    };
+    });
 
-    // Notifications
-    document.getElementById('saveNotifBtn').onclick = () => {
+    // Notifications Save
+    safeAddEventListener('saveNotifBtn', 'click', () => {
         const notifs = {
-            email: document.getElementById('notifEmail').checked,
-            push: document.getElementById('notifPush').checked
+            email: document.getElementById('notifEmail')?.checked || false,
+            push: document.getElementById('notifPush')?.checked || false
         };
-        localStorage.setItem('hydroGenNotifs', JSON.stringify(notifs));
+        StorageManager.set('hydroGenNotifs', notifs);
         showFeedback('Notification preferences saved');
-    };
+    });
 
-    // Hardware Thresholds (Write to Firebase)
-    document.getElementById('saveThresholdsBtn').onclick = () => {
+    // Hardware Thresholds Save
+    safeAddEventListener('saveThresholdsBtn', 'click', () => {
+        const rawLowWater = parseInt(lowWaterSlider?.value || 350, 10);
+        // Map 100-400 cm to 100-0%
+        const lowWaterPercent = Math.round(((400 - rawLowWater) / 300) * 100);
+
         const thresholds = {
-            lowWater: parseInt(lowWaterSlider.value),
-            drySoil: parseInt(drySoilSlider.value)
+            lowWater: Math.min(100, Math.max(0, lowWaterPercent)),
+            drySoil: parseInt(drySoilSlider?.value || 20, 10)
         };
 
         if (window.hydroGenDB) {
             window.hydroGenDB.ref('settings/thresholds').set(thresholds)
                 .then(() => {
-                    localStorage.setItem('hydroGenThresholds', JSON.stringify(thresholds));
+                    StorageManager.set('hydroGenThresholds', thresholds);
                     showFeedback('Hardware thresholds synced with Firebase');
                 })
                 .catch(err => {
-                    console.error('Firebase save error:', err);
+                    console.error('[Firebase] Save error:', err);
+                    StorageManager.set('hydroGenThresholds', thresholds);
                     showFeedback('Sync failed, but saved locally', 'error');
                 });
         } else {
-            localStorage.setItem('hydroGenThresholds', JSON.stringify(thresholds));
+            StorageManager.set('hydroGenThresholds', thresholds);
             showFeedback('Saved locally (Firebase not connected)');
         }
-    };
+    });
 
-    // Firebase Configuration
-    document.getElementById('firebaseConfigForm').onsubmit = (e) => {
+    // Firebase Configuration Form
+    safeAddEventListener('firebaseConfigForm', 'submit', (e) => {
         e.preventDefault();
         const config = {
-            databaseURL: document.getElementById('fbDatabaseUrl').value,
-            apiKey: document.getElementById('fbApiKey').value,
-            projectId: document.getElementById('fbProjectId').value
+            databaseURL: document.getElementById('fbDatabaseUrl')?.value.trim() || '',
+            apiKey: document.getElementById('fbApiKey')?.value.trim() || '',
+            projectId: document.getElementById('fbProjectId')?.value.trim() || ''
         };
-        localStorage.setItem('hydroGenFirebaseConfig', JSON.stringify(config));
+        StorageManager.set('hydroGenFirebaseConfig', config);
         showFeedback('Firebase config saved. Reload page to reconnect.');
         setTimeout(() => location.reload(), 2000);
-    };
+    });
 
-    document.getElementById('resetFbConfigBtn').onclick = () => {
-        localStorage.removeItem('hydroGenFirebaseConfig');
+    // Reset Firebase Configuration
+    safeAddEventListener('resetFbConfigBtn', 'click', () => {
+        StorageManager.remove('hydroGenFirebaseConfig');
         showFeedback('Restored defaults. Reloading...');
         setTimeout(() => location.reload(), 1500);
-    };
+    });
 
     // 5. Utility Functions
     function showFeedback(msg, type = 'success') {
+        if (!saveToast || !saveToastEl) {
+            console.log(`[Fallback Toast] ${type}: ${msg}`);
+            alert(msg); // Fallback if Bootstrap is unavailable
+            return;
+        }
+
         const toastBody = saveToastEl.querySelector('.toast-body');
         const toastHeader = saveToastEl.querySelector('.toast-header');
 
-        toastBody.innerText = msg;
-        if (type === 'error') {
-            toastHeader.classList.replace('bg-success', 'bg-danger');
-        } else {
-            toastHeader.classList.replace('bg-danger', 'bg-success');
+        if (toastBody) toastBody.innerText = msg;
+        
+        if (toastHeader) {
+            if (type === 'error') {
+                toastHeader.classList.remove('bg-success');
+                toastHeader.classList.add('bg-danger');
+            } else {
+                toastHeader.classList.remove('bg-danger');
+                toastHeader.classList.add('bg-success');
+            }
         }
         saveToast.show();
     }
 
     function loadProfile() {
-        // try saved profile first, fall back to hydroUser
-        const saved = localStorage.getItem('hydroGenProfile');
-        if (saved) {
-            const profile = JSON.parse(saved);
-            document.getElementById('inputName').value  = profile.name  || "";
-            document.getElementById('inputEmail').value = profile.email || "";
-            document.getElementById('inputPhone').value = profile.phone || "";
-        } else {
-            try {
-                const user = JSON.parse(localStorage.getItem("hydroUser") || "{}");
-                document.getElementById('inputName').value  = user.name  || "";
-                document.getElementById('inputEmail').value = user.email || "";
-            } catch(e) {}
-        }
+        const profile = StorageManager.get('hydroGenProfile');
+        const user = StorageManager.get('hydroUser', {});
+
+        const inputName = document.getElementById('inputName');
+        const inputEmail = document.getElementById('inputEmail');
+        const inputPhone = document.getElementById('inputPhone');
+
+        const name = profile?.name || user?.name || "";
+        const email = profile?.email || user?.email || "";
+
+        if (inputName) inputName.value = name;
+        if (inputEmail) inputEmail.value = email;
+        if (inputPhone) inputPhone.value = profile?.phone || "";
+
+        // Dynamically update the header elements on load
+        const usernameEl = document.getElementById("username");
+        const emailEl = document.getElementById("email");
+        const avatarEl = document.getElementById("userAvatar");
+        
+        if (usernameEl && name) usernameEl.textContent = name;
+        if (emailEl && email) emailEl.textContent = email;
+        if (avatarEl && name) avatarEl.textContent = name.charAt(0).toUpperCase();
     }
 
     function loadNotifications() {
-        const saved = localStorage.getItem('hydroGenNotifs');
-        if (saved) {
-            const notifs = JSON.parse(saved);
-            document.getElementById('notifEmail').checked = notifs.email;
-            document.getElementById('notifPush').checked = notifs.push;
+        const notifs = StorageManager.get('hydroGenNotifs');
+        if (notifs) {
+            const emailToggle = document.getElementById('notifEmail');
+            const pushToggle = document.getElementById('notifPush');
+            if (emailToggle) emailToggle.checked = !!notifs.email;
+            if (pushToggle) pushToggle.checked = !!notifs.push;
         }
     }
 
     function loadFirebaseConfig() {
-        const saved = localStorage.getItem('hydroGenFirebaseConfig');
-        const config = saved ? JSON.parse(saved) : (window.defaultFirebaseConfig || {});
-        if (config.databaseURL) document.getElementById('fbDatabaseUrl').value = config.databaseURL;
-        if (config.apiKey)      document.getElementById('fbApiKey').value      = config.apiKey;
-        if (config.projectId)   document.getElementById('fbProjectId').value   = config.projectId;
+        const config = StorageManager.get('hydroGenFirebaseConfig') || window.defaultFirebaseConfig || {};
+        const urlInput = document.getElementById('fbDatabaseUrl');
+        const apiKeyInput = document.getElementById('fbApiKey');
+        const projectIdInput = document.getElementById('fbProjectId');
+
+        if (config.databaseURL && urlInput) urlInput.value = config.databaseURL;
+        if (config.apiKey && apiKeyInput) apiKeyInput.value = config.apiKey;
+        if (config.projectId && projectIdInput) projectIdInput.value = config.projectId;
     }
 
     function loadHardwareThresholds() {
         // Try Firebase first if connected
         if (window.hydroGenDB) {
-            window.hydroGenDB.ref('settings/thresholds').once('value').then(snap => {
-                const data = snap.val();
-                if (data) applyThresholds(data);
-                else {
-                    // Try Local
-                    const local = localStorage.getItem('hydroGenThresholds');
-                    if (local) applyThresholds(JSON.parse(local));
-                }
-            });
+            window.hydroGenDB.ref('settings/thresholds').once('value')
+                .then(snap => {
+                    const data = snap.val();
+                    if (data) {
+                        applyThresholds(data);
+                    } else {
+                        fallbackToLocalThresholds();
+                    }
+                })
+                .catch(err => {
+                    console.warn('[Firebase] Failed to load thresholds, falling back to local.', err);
+                    fallbackToLocalThresholds();
+                });
+        } else {
+            fallbackToLocalThresholds();
         }
     }
 
+    function fallbackToLocalThresholds() {
+        const local = StorageManager.get('hydroGenThresholds');
+        if (local) applyThresholds(local);
+    }
+
     function applyThresholds(data) {
-        if (data.lowWater) {
-            lowWaterSlider.value = data.lowWater;
-            lowWaterValue.innerText = data.lowWater;
+        if (data.lowWater !== undefined && lowWaterSlider && lowWaterValue) {
+            let cmValue;
+            if (data.lowWater > 100) {
+                // Handle legacy cm value
+                cmValue = data.lowWater;
+            } else {
+                // Map 0-100% back to 100-400 cm
+                cmValue = Math.round(400 - (data.lowWater / 100) * 300);
+            }
+            lowWaterSlider.value = cmValue;
+            lowWaterValue.innerText = cmValue;
         }
-        if (data.drySoil) {
+        if (data.drySoil !== undefined && drySoilSlider && drySoilValue) {
             drySoilSlider.value = data.drySoil;
             drySoilValue.innerText = data.drySoil;
         }
