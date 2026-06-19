@@ -30,7 +30,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Data storage for live session history
     let historyData = [];
     let liveHistoryData = []; // Last 20 live points
-    let currentFilter = 'Live'; // 'Live', 'All', 'Day', 'Week', 'Month', 'Year'
+    // Read the default filter from whichever radio is checked in the HTML
+    // (avoids UI/logic mismatch if HTML default ever changes)
+    const checkedFilter = document.querySelector('.time-filter:checked');
+    let currentFilter = checkedFilter
+        ? (checkedFilter.nextElementSibling?.innerText?.trim() || 'All')
+        : 'All';
 
     // Pump Stats
     let pumpStartTime = null;
@@ -63,10 +68,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function clearAllData() {
-        if (confirm('Are you sure you want to clear all analytics data? This cannot be undone.')) {
-            localStorage.removeItem('hydroGenAnalyticsStats');
-            location.reload();
-        }
+        const confirmed = window.confirm(
+            'Clear all analytics data? This cannot be undone.'
+        );
+        if (!confirmed) return;
+        localStorage.removeItem('hydroGenAnalyticsStats');
+        location.reload();
     }
     // ---------------------------
 
@@ -297,7 +304,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const nowTime = Date.now();
             const timeStr = new Date(nowTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-            // Only push if time changes (once per second max)
             if (liveHistoryData.length === 0 || liveHistoryData[liveHistoryData.length - 1].label !== timeStr) {
                 liveHistoryData.push({
                     temp: data.temp || 0,
@@ -312,14 +318,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     liveHistoryData.shift();
                 }
 
-                // If currently on Live filter, update charts immediately!
                 if (currentFilter === 'Live') {
                     updateCharts();
                 }
             }
 
-            // Update Summary Production (Simulated based on tank level)
-            const waterLitres = Math.max(0, (30 - data.water) / 30 * 2).toFixed(2);
+            const rawWaterNum = isNaN(+data.water) ? 0 : +data.water;
+            const waterPct    = Math.min(100, Math.max(0, (rawWaterNum / 30) * 100));
+            const waterLitres = (waterPct / 100 * 200).toFixed(1);
             if (totalProducedEl) totalProducedEl.innerText = waterLitres;
 
             // Update analysis panels with live current values
@@ -381,10 +387,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const clearBtn = document.getElementById('clearAnalyticsBtn');
     if (clearBtn) clearBtn.onclick = clearAllData;
 
-    // Filter Listeners
+    // Filter Listeners — read from label text but trim whitespace defensively
     document.querySelectorAll('.time-filter').forEach(btn => {
         btn.onchange = () => {
-            currentFilter = btn.nextElementSibling.innerText;
+            const labelEl = btn.nextElementSibling;
+            currentFilter = labelEl ? labelEl.innerText.trim() : btn.value;
             updateCharts();
             showFeedback(`Viewing ${currentFilter} data`);
         };
