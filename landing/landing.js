@@ -1,52 +1,52 @@
-// ── Theme Sync ──
-function applyTheme(mode) {
-  if (mode === "dark") document.body.classList.add("dark");
-  else if (mode === "light") document.body.classList.remove("dark");
-  else document.body.classList.toggle("dark", window.matchMedia("(prefers-color-scheme: dark)").matches);
-}
-applyTheme(localStorage.getItem("theme") || "system");
+/* landing.js */
 
-
-function redirectToHome() {
-  window.location.href = "../home/Home.html";
-}
-
-
-if (typeof firebase !== "undefined" && firebase.auth) {
-  firebase.auth().onAuthStateChanged(function(user) {
-    if (user) {
-      
-      localStorage.setItem("hydroUser", JSON.stringify({
-        email: user.email,
-        uid: user.uid,
-        loggedAt: Date.now()
-      }));
-      redirectToHome();
-    } else {
-      
-      if (localStorage.getItem("hydroUser")) {
-        redirectToHome();
-      }
-      
+document.addEventListener('DOMContentLoaded', () => {
+    // 1. Check if the user is already logged in to customize the navigation
+    try {
+        const userRaw = localStorage.getItem("hydroUser");
+        if (userRaw) {
+            const user = JSON.parse(userRaw);
+            if (user && (user.email || user.uid)) {
+                // Update Sign In link to Dashboard
+                const signInLink = document.querySelector('.header a[href*="login"], .header a[href*="Login"]');
+                if (signInLink) {
+                    signInLink.href = "../dashboard/dashboard.html";
+                    signInLink.textContent = "Dashboard";
+                }
+                
+                // Update Get Started link to Dashboard
+                const getStartedLink = document.querySelector('.landing-buttons a[href*="register"], .landing-buttons a[href*="Register"]');
+                if (getStartedLink) {
+                    getStartedLink.href = "../dashboard/dashboard.html";
+                    getStartedLink.textContent = "Go to Dashboard";
+                }
+            }
+        }
+    } catch (e) {
+        console.error("Error reading user session from localStorage:", e);
     }
-  });
-} else {
-  
-  if (localStorage.getItem("hydroUser")) {
-    redirectToHome();
-  }
-}
 
-// animation features on scroll
-const cards = document.querySelectorAll(".feature-card");
+    // 2. Scroll Reveal Animation for Feature Cards
+    const cards = document.querySelectorAll('.feature-card');
+    
+    if (cards.length > 0) {
+        const observerOptions = {
+            root: null,
+            threshold: 0.1,
+            rootMargin: '0px 0px -50px 0px'
+        };
 
-window.addEventListener("scroll", () => {
-  cards.forEach((card, index) => {
-    const top = card.getBoundingClientRect().top;
-    if (top < window.innerHeight - 50) {
-      setTimeout(() => {
-        card.classList.add("show");
-      }, index * 150);
+        const observer = new IntersectionObserver((entries, observer) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('show');
+                    observer.unobserve(entry.target); // Stop observing once shown
+                }
+            });
+        }, observerOptions);
+
+        cards.forEach(card => {
+            observer.observe(card);
+        });
     }
-  });
 });
